@@ -1,0 +1,62 @@
+# Facade methods that deliberately have no COM counterpart.
+#
+# Read by check_api_drift.ps1, which fails on any public method of a mapped interface in
+# TargetFacade.h that reaches no method in TargetCom.idl. Format, one per line:
+#
+#     <pair id>  <Interface>::<Method>     # why the server does not carry it
+#
+# A REASON IS NOT DECORATION. A networking facade grows by accretion -- one more Send
+# overload, one more diagnostic, one more event -- and every addition is unreachable from
+# a scripting client until somebody writes the IDL half. Nothing else in this repository
+# notices: the vtable compiles, the server compiles, a C++ test passes, and the Automation
+# client simply does not have it. Each line here is the difference between "we decided
+# not to expose that" and "nobody noticed it was missing", which from outside look
+# identical and are not.
+#
+# The honest bulk of what belongs here is what Automation cannot express: a raw payload
+# pointer with no VARIANT to carry it, a synchronous callback a script cannot service, a
+# handle whose lifetime a late-bound client cannot hold. Say WHICH, so a marshalling
+# limit is not mistaken for a decision, and so the entry can be revisited if the
+# marshalling changes.
+#
+# UNTRIAGED marks a line banked by -Seed on the day the check was first run. It means
+# only that nobody has looked yet, and it is counted out loud on every run.
+#
+# IP2PDiagEvents is mapped to a dispinterface that does not exist yet. Its entries should
+# say so rather than say "internal": the sink is real, it has no Automation face, and if
+# one is ever added the mapping is already correct and these lines clear themselves.
+
+
+# ---------------------------------------------------------------------------------
+#  UNTRIAGED -- banked by -Seed, not decided by anybody.
+#
+#  Each line below says only that the member had no counterpart on the day the
+#  check was first run. Replacing UNTRIAGED with a real reason IS the triage, and
+#  the count is printed on every run so the backlog cannot go quiet.
+# ---------------------------------------------------------------------------------
+facade-to-com  IP2PDiagEvents::OnDiag    # UNTRIAGED (method, include/TargetFacade.h:574)
+facade-to-com  IP2PHub::Describe    # UNTRIAGED (method, include/TargetFacade.h:1014)
+facade-to-com  IP2PHub::GetCon    # UNTRIAGED (method, include/TargetFacade.h:991)
+facade-to-com  IP2PHub::GetEndpoint    # UNTRIAGED (method, include/TargetFacade.h:1000)
+facade-to-com  IP2PHub::GetField    # UNTRIAGED (method, include/TargetFacade.h:1291)
+facade-to-com  IP2PHub::GetFieldCount    # UNTRIAGED (method, include/TargetFacade.h:1283)
+facade-to-com  IP2PHub::GetFieldName    # UNTRIAGED (method, include/TargetFacade.h:1284)
+facade-to-com  IP2PHub::GetMsgInfo    # UNTRIAGED (method, include/TargetFacade.h:1238)
+facade-to-com  IP2PHub::GetNative    # UNTRIAGED (method, include/TargetFacade.h:1156)
+facade-to-com  IP2PHub::GetPending    # UNTRIAGED (method, include/TargetFacade.h:1347)
+facade-to-com  IP2PHub::GetPumpInfo    # UNTRIAGED (method, include/TargetFacade.h:1358)
+facade-to-com  IP2PHub::Post    # UNTRIAGED (method, include/TargetFacade.h:1088)
+facade-to-com  IP2PHub::Pump    # UNTRIAGED (method, include/TargetFacade.h:1334)
+facade-to-com  IP2PHub::SetExtEvents    # UNTRIAGED (method, include/TargetFacade.h:1046)
+facade-to-com  IP2PHubEvents2::OnMessageEx    # UNTRIAGED (method, include/TargetFacade.h:682)
+facade-to-com  IP2PHubEvents2::OnPost    # UNTRIAGED (method, include/TargetFacade.h:703)
+facade-to-com  IP2PMessage::Release    # UNTRIAGED (method, include/TargetFacade.h:799)
+facade-to-com  IP2PNetwork::CreateHubEx    # UNTRIAGED (method, include/TargetFacade.h:1568)
+facade-to-com  IP2PNetwork::GetDiagInfo    # UNTRIAGED (method, include/TargetFacade.h:1651)
+facade-to-com  IP2PNetwork::GetDiagMask    # UNTRIAGED (method, include/TargetFacade.h:1614)
+facade-to-com  IP2PNetwork::GetDiagText    # UNTRIAGED (method, include/TargetFacade.h:1630)
+facade-to-com  IP2PNetwork::IsDiagWanted    # UNTRIAGED (method, include/TargetFacade.h:1707)
+facade-to-com  IP2PNetwork::RaiseDiag    # UNTRIAGED (method, include/TargetFacade.h:1681)
+facade-to-com  IP2PNetwork::Release    # UNTRIAGED (method, include/TargetFacade.h:1391)
+facade-to-com  IP2PNetwork::SetDiagMask    # UNTRIAGED (method, include/TargetFacade.h:1611)
+facade-to-com  IP2PNetwork::SetDiagSink    # UNTRIAGED (method, include/TargetFacade.h:1600)

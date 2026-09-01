@@ -1,0 +1,86 @@
+TargetFacade
+
+Copyright © 2026 Khrustal & Mann
+             MELBOURNE, VICTORIA, AUSTRALIA, 3000
+
+This product includes software developed by Khrustal & Mann.
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file in
+this directory, or http://www.apache.org/licenses/LICENSE-2.0
+
+This repository holds two things: TargetFacade.dll, a macro-free facade over
+TargetCore.dll's peer-to-peer messaging kernel, and TargetCom.dll (in com\),
+an ATL in-proc COM server built on that facade. TargetCore and Msgcore are
+separate repositories under the same licence and are NOT bundled here.
+
+
+-------------------------------------------------------------------------
+Files NOT covered by the Apache License, Version 2.0
+-------------------------------------------------------------------------
+
+The following files are Microsoft Corporation project-template, wizard-
+generated, or sample-derived files. They remain subject to Microsoft's own
+terms and carry their own notices, which must not be removed:
+
+    src/Targetver.h                    MFC sample source.
+                                       Copyright (C) Microsoft Corporation.
+    com/Targetver.h                    MFC sample source.
+                                       Copyright (C) Microsoft Corporation.
+    com/P2PNetwork.rgs                 ATL registrar script, wizard-generated.
+    TargetFacade(2022).sln             Visual Studio solution file.
+    TargetFacade(2022).vcxproj         Visual Studio project files.
+    com/TargetCom(2022).vcxproj
+    com/test/ComSmokeTest(2022).vcxproj
+    examples/HubWatchdog/HubWatchdog(2022).vcxproj
+    test/FacadeSmokeTest/FacadeSmokeTest(2022).vcxproj
+    test/WildcardListenTest/WildcardListenTest(2022).vcxproj
+
+Targetver.h additionally carries Microsoft's Fluent UI referential-material
+notice; licence terms for the Fluent UI are available separately from
+Microsoft.
+
+com/stdafx.h, com/stdafx.cpp, src/stdafx.h, src/stdafx.cpp, com/resource.h and
+com/TargetCom.rc began as project-template or wizard-generated files but have
+been rewritten to the point that nothing of the template remains; they carry
+the Apache header in full and ARE covered by the Apache License, Version 2.0.
+
+TargetFacade(2022).vcxproj.user is per-user IDE state and is excluded by
+.gitignore, so no clone contains it and it needs no exception here.
+
+
+-------------------------------------------------------------------------
+Third-party components required at build or run time
+-------------------------------------------------------------------------
+
+This software is built against, and links to, components that are licensed
+separately and are NOT distributed under the Apache License, Version 2.0:
+
+    Microsoft Foundation Classes (MFC)  - Microsoft, licensed separately.
+                                          TargetFacade.dll is built against
+                                          the shared MFC runtime (UseOfMfc =
+                                          Dynamic) because TargetCore and
+                                          Msgcore are MFC extension DLLs.
+    Active Template Library (ATL)       - Microsoft, licensed separately.
+                                          TargetCom links ATL statically
+                                          (UseOfAtl = Static).
+    Microsoft Visual C++ runtime        - Microsoft, licensed separately.
+                                          (mfc140u, msvcp140, vcruntime140,
+                                          ucrtbase)
+    Windows SDK                         - Microsoft, part of the operating
+                                          system. (ws2_32, MsWsock, ole32,
+                                          oleaut32, and the COM support
+                                          runtime comsuppw / comsuppwd)
+
+These are dependencies, not bundled code. No source from any of them is
+included in this repository.
+
+
+-------------------------------------------------------------------------
+Sibling components required at build or run time
+-------------------------------------------------------------------------
+
+    TargetCore.dll / TargetCore.lib     Khrustal & Mann, Apache License,
+    Msgcore.dll / Msgcore.lib           Version 2.0, in their own
+                                        repositories. Not bundled here;
+                                        TargetFacade.dll does not run without
+                                        both of them.

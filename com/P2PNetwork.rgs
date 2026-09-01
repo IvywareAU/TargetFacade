@@ -1,0 +1,26 @@
+HKCR
+{
+	TargetCom.P2PNetwork.1 = s 'TargetCom P2PNetwork Class'
+	{
+		CLSID = s '{AC8A3AD3-F73E-467C-952C-AED2762C00C3}'
+	}
+	TargetCom.P2PNetwork = s 'TargetCom P2PNetwork Class'
+	{
+		CLSID = s '{AC8A3AD3-F73E-467C-952C-AED2762C00C3}'
+		CurVer = s 'TargetCom.P2PNetwork.1'
+	}
+	NoRemove CLSID
+	{
+		ForceRemove {AC8A3AD3-F73E-467C-952C-AED2762C00C3} = s 'TargetCom P2PNetwork Class'
+		{
+			ProgID = s 'TargetCom.P2PNetwork.1'
+			VersionIndependentProgID = s 'TargetCom.P2PNetwork'
+			ForceRemove 'Programmable'
+			InprocServer32 = s '%MODULE%'
+			{
+				val ThreadingModel = s 'Both'
+			}
+			'TypeLib' = s '{EACCF9B6-48FF-4F4B-9B10-CC5D3046639C}'
+		}
+	}
+}

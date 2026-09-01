@@ -1,0 +1,16 @@
+# Single build output root, shared by all six projects in the solution:
+#   out\<Platform>\<Configuration>\            binaries
+#   out\<Platform>\<Configuration>\obj\<Proj>\ intermediates
+# Pinned in each .vcxproj. The old per-project x64\ and Win32\ trees -- one pair
+# at the repository root and one beside every other project -- are no longer
+# produced.
+out/
+
+.vs/
+*.user
+*.aps
+
+# A working note on what the COM layer still owes -- IP2PHubCom2, the dispids
+# above 15, and why the custom interface has to be [oleautomation]. Scratch,
+# not documentation: what it settles belongs in the source it lands in.
+/Continue.txt

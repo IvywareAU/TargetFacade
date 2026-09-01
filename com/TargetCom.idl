@@ -1,0 +1,689 @@
+// Copyright © 2026 Khrustal & Mann
+//              MELBOURNE, VICTORIA, AUSTRALIA, 3000
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+// implied. See the License for the specific language governing
+// permissions and limitations under the License.
+//
+// TargetCom.idl
+//
+// The COM face of TargetFacade: dual interfaces (vtable + IDispatch) that map
+// 1:1 onto p2pf::IP2PNetwork / p2pf::IP2PHub, plus a connection-point event
+// dispinterface that replaces the C++ p2pf::IP2PHubEvents sink.
+//
+// The mapping is mechanical, exactly as include\TargetFacade.h promised:
+//
+//      const wchar_t*        ->  BSTR
+//      void* + unsigned int  ->  VARIANT holding SAFEARRAY(VT_UI1)
+//      BOOL                  ->  VARIANT_BOOL
+//      IP2PHubEvents         ->  dispinterface _IP2PHubEvents (source)
+//
+// There are no numeric parameters left to map: a port, a pipe name, a service
+// and a COM port all arrive inside the endpoint BSTR, which the facade parses
+// and range-checks in one place (P2PF_E_ENDPOINT).
+//
+// Two deliberate departures from a blind 1:1 copy:
+//
+//  * Broadcast returns [out,retval] VARIANT_BOOL Delivered, because the flat
+//    facade signals "no peer was up" with S_FALSE and automation clients never
+//    see a success HRESULT.
+//  * Address / VersionString / MaxPayload are properties, not methods, which
+//    is what an automation client expects of a read-only value.
+//
+// A third, added later and for the same reason as the first: the READ SIDE
+// (RelationTo / ConCount / PeerAt / EndpointFor / Description, dispids 9-13)
+// is one-in-one-retval rather than a transliteration of GetCon's five
+// parameters and caller-sized buffers.  It is what lets any tier ask a hub
+// afterwards what it is connected to -- including the one thing Listen/Connect
+// cannot tell an automation client, because P2PF_S_UNRELATED_LINK is a SUCCESS
+// code and automation discards those.
+//
+// Two more, added for the same audience:
+//
+//  * IP2PNetworkCom::Link (dispid 4) arms BOTH ends of an edge in the order
+//    that works.  Only the network can: it is the one object holding every
+//    live hub.  A script cannot learn by itself that a dmx:// dial does not
+//    retry and so the listener must be armed first -- a wrong order produces
+//    no error, just a link that never comes up.
+//  * BOTH coclasses implement ISupportErrorInfo, so a failure leaves an
+//    IErrorInfo carrying a sentence.  That is the price of the endpoint being
+//    a STRING: what a typed method could not spell wrongly, one string can,
+//    and a bare 0x80040208 does not say which part was wrong.  See ComHub.cpp.
+
+import "oaidl.idl";
+import "ocidl.idl";
+
+// Declared below, but IP2PHubCom::SendMsg takes one and IP2PHubCom comes
+// first.
+interface IP2PMessageCom;
+
+// The IID and the dispids below were BOTH reissued when the eight typed
+// Listen*/Connect* methods collapsed onto one endpoint pair.  Reshaping a
+// released interface in place is normally forbidden -- an interface is
+// immutable once anyone holds it -- so the honest move is a new identity, and
+// that is what this is: a client built against the old IID simply fails to
+// QueryInterface instead of calling Listen with the wrong argument types.
+// It is a new IID rather than a derived IP2PHubCom2 because there is nothing
+// deployed to stay compatible WITH; keeping the old interface alive would
+// preserve a shape no caller uses and double the surface for ever.
+// Unregister any previously registered build before installing this one --
+// the old CLSID/IID entries do not clean themselves up.
+[
+    object,
+    uuid(12D65CF2-3F8C-4856-A52F-1B0B35F3B4FE),
+    dual,
+    nonextensible,
+    pointer_default(unique),
+    helpstring("One P2P messaging endpoint (wraps p2pf::IP2PHub).")
+]
+interface IP2PHubCom : IDispatch
+{
+    // --- connections ------------------------------------------------------
+    // One pair for every transport; `endpoint` is "tcp://:7788",
+    // "tcp://127.0.0.1:7788", "pipe://name", "dmx://service", "serial://COM5",
+    // or "" to resolve an in-process link with no configuration at all.
+    // `toPeer` is the address of the hub on the OTHER end -- and may be a
+    // pattern ("*", "Demo.*") on Listen.
+    [id(1), helpstring("Arm a listener for the named peer at an endpoint.")]
+    HRESULT Listen ( [in] BSTR toPeer, [in] BSTR endpoint );
+
+    [id(2), helpstring("Arm a dial to the named peer at an endpoint.")]
+    HRESULT Connect ( [in] BSTR toPeer, [in] BSTR endpoint );
+
+    // --- sending ----------------------------------------------------------
+    [id(3), helpstring("Unicast a payload (byte array or string) under a topic.")]
+    HRESULT Send ( [in] BSTR dest, [in] BSTR topic, [in] VARIANT payload );
+
+    [id(4), helpstring("Unicast a string (sent including its terminator).")]
+    HRESULT SendText ( [in] BSTR dest, [in] BSTR topic, [in] BSTR text );
+
+    [id(5), helpstring("Broadcast to every peer up right now; False if none was.")]
+    HRESULT Broadcast ( [in] BSTR topic, [in] VARIANT payload,
+                        [out, retval] VARIANT_BOOL *pDelivered );
+
+    // --- properties / lifecycle -------------------------------------------
+    [propget, id(6), helpstring("This hub's own address.")]
+    HRESULT Address ( [out, retval] BSTR *pVal );
+
+    [id(7), helpstring("True while the connection to the named peer is logged in.")]
+    HRESULT IsPeerUp ( [in] BSTR peer, [out, retval] VARIANT_BOOL *pVal );
+
+    [id(8), helpstring("Stop the pump, drop all connections, destroy the hub.")]
+    HRESULT Close ( );
+
+    // --- the read side ----------------------------------------------------
+    //
+    // APPENDED, not reshaped: dispids 1-8 above keep their numbers and their
+    // signatures, so an IDispatch client binding by name or by dispid is
+    // undisturbed and a vtable client keeps a compatible prefix.  The IID
+    // therefore does NOT change.
+    //
+    // These exist because a success HRESULT does not survive automation.
+    // Listen/Connect can return P2PF_S_UNRELATED_LINK -- "armed, but the two
+    // addresses are neither ancestor nor descendant, so nothing can be ROUTED
+    // through this edge and a broadcast will not relay beyond it" -- and
+    // ITypeInfo::Invoke and the CLR interop marshaller both normalise every
+    // success code to S_OK on the way out.  Only a C++ vtable caller ever sees
+    // it.  So the question is answerable AFTERWARDS, from any tier, at any
+    // time: RelationTo("peer") & p2pfRelUnrelated, or read Description.
+    //
+    // Reshaped, not transliterated.  The flat ABI's GetCon packs five
+    // parameters and a caller-sized buffer protocol -- right for C++, hostile
+    // to a scripting host, where late-bound [out] BSTR* parameters are exactly
+    // where things get fragile.  These are one in, one retval throughout; the
+    // buffer dance lives inside ComHub.cpp.  Same principle that reshaped
+    // Broadcast.
+    [id(9), helpstring("How `peer` sits in the address tree relative to this hub, "
+                       "plus what this hub armed for it. See P2PConFlag.")]
+    HRESULT RelationTo ( [in] BSTR peer, [out, retval] LONG *pFlags );
+
+    [propget, id(10), helpstring("How many peers this hub knows -- armed plus "
+                                 "learned at login. NOT how many are up.")]
+    HRESULT ConCount ( [out, retval] LONG *pVal );
+
+    [id(11), helpstring("The peer at this position in a momentary ordering "
+                        "(a position, never a handle -- the set is live).")]
+    HRESULT PeerAt ( [in] LONG index, [out, retval] BSTR *pVal );
+
+    [id(12), helpstring("The endpoint this hub armed for `peer`, canonically "
+                        "spelled; empty if this hub armed nothing for it.")]
+    HRESULT EndpointFor ( [in] BSTR peer, [out, retval] BSTR *pVal );
+
+    [propget, id(13), helpstring("The whole picture as one atomic snapshot -- "
+                                 "one line per peer, for a log or a bug report.")]
+    HRESULT Description ( [out, retval] BSTR *pVal );
+
+    // --- past the messaging slice (facade ABI 6) --------------------------
+    //
+    // APPENDED again, dispids 14-20, same additive rule: 1-13 keep their
+    // numbers and their vtable slots, so the IID does not change and no
+    // existing call site moves.
+    //
+    // SEVEN of the facade's ten new methods reach this tier.  The three that
+    // do not, and why, because the omission is a design statement rather than
+    // an oversight:
+    //
+    //  * Post(key, context) carries a raw in-process POINTER.  There is no
+    //    automation type for that and no meaning for it across a marshalling
+    //    boundary.
+    //  * GetNative hands back a P2PeerHub*, which is the same objection twice
+    //    over -- and a script has nothing to do with one.
+    //  * OnMessageEx's ANSWER (handled / not handled) cannot survive this
+    //    layer: events here are copied into a queue and replayed later on a
+    //    dispatch thread, precisely so a slow client cannot stall the kernel
+    //    pump, and by the time a sink could answer, the facade has long since
+    //    had to tell the kernel whether the message was handled.  Automation
+    //    clients get OnMessage as they always did, and therefore never send
+    //    the not-handled report back to a sender that a declining C++ sink
+    //    does.  A sink here always accepts.
+    //
+    // OnTimer and OnEvent DO reach it, on the event dispinterface below.
+    [id(14), helpstring("Drop ONE peer, leaving the hub and its other connections "
+                        "running. S_FALSE if it is still retiring.")]
+    HRESULT Disconnect ( [in] BSTR peer );
+
+    // Fires _IP2PHubEvents::OnTimer once. Never early; up to about a second
+    // late (the kernel's poll granularity) -- housekeeping, never pacing.
+    [id(15), helpstring("Arm a one-shot timer; returns the id OnTimer will carry.")]
+    HRESULT SetTimer ( [in] LONG delayMillisecs, [in] LONG key,
+                       [out, retval] LONG *pTimerId );
+
+    [id(16), helpstring("Cancel a timer that has not fired (S_FALSE if unknown).")]
+    HRESULT KillTimer ( [in] LONG timerId );
+
+    // Facade-to-facade, on a private topic: the kernel's own P2PmsgPing has no
+    // responder at all. A peer that is not a facade hub times out. Follows
+    // ordinary routing, so a multi-hop peer can be pinged -- what comes back
+    // is the whole path, not one link. Omitted timeout = 5 s.
+    [id(17), helpstring("Round trip to a peer, in milliseconds.")]
+    HRESULT Ping ( [in] BSTR peer, [in, defaultvalue(0)] LONG timeoutMillisecs,
+                   [out, retval] LONG *pMillisecs );
+
+    // `option` is a P2PConOption. Three of the six are read-only and answer
+    // p2pfOption to a Set. See that enum for what each one means.
+    [id(18), helpstring("Write one per-connection knob (trace, max send/recv).")]
+    HRESULT SetConOption ( [in] BSTR peer, [in] LONG option, [in] LONG value );
+
+    [id(19), helpstring("Read one per-connection knob or state value.")]
+    HRESULT GetConOption ( [in] BSTR peer, [in] LONG option,
+                           [out, retval] LONG *pValue );
+
+    // No counterpart: the kernel's WakeupHub is an unimplemented stub, so a
+    // `Resume` here could only be a lie.
+    [id(20), helpstring("Ask every connection on this hub to close if it is idle.")]
+    HRESULT CloseIdleCons ( );
+
+    // --- the message model (facade ABI 7) ---------------------------------
+    //
+    // Appended again: 1-20 keep their numbers and the IID is unchanged.
+    //
+    // The flat ABI puts all four read properties behind ONE method,
+    // IP2PHub::GetMsgInfo, callable only from inside a delivery on the pump
+    // thread.  THAT RULE CANNOT BE EXPRESSED HERE and is not the rule here:
+    // events at this tier are copied into a queue on the pump thread and
+    // replayed later on a dispatch thread, so by the time a script's
+    // OnMessage runs, the message is long gone.
+    //
+    // So the facade is asked at ENQUEUE time -- on the pump thread, inside the
+    // delivery, which is exactly where the flat rule permits it -- and the
+    // answers travel with the queued copy.  The properties below read that
+    // copy, and are therefore valid FOR THE DURATION OF AN OnMessage EVENT
+    // HANDLER, on the thread the event is raised on.  Anywhere else they
+    // answer p2pfNoMessage, which is the same contract wearing different
+    // clothes.
+    //
+    // Four properties rather than one method with four outs, because that is
+    // what reads as a value in script: `If hub.MsgTag = myRequest Then`.
+    [propget, id(21), helpstring("The address the current message was addressed TO. "
+                                 "Valid only inside an OnMessage handler.")]
+    HRESULT MsgDest ( [out, retval] BSTR *pVal );
+
+    [propget, id(22), helpstring("The current message's priority (P2PPriority). "
+                                 "Valid only inside an OnMessage handler.")]
+    HRESULT MsgPriority ( [out, retval] LONG *pVal );
+
+    // The one that earns this whole group: the sender's correlation token,
+    // travelling with the message, so a reply can be matched to its request
+    // without either of them spending a byte of payload on saying which.
+    [propget, id(23), helpstring("The current message's correlation tag, 0 if none. "
+                                 "Valid only inside an OnMessage handler.")]
+    HRESULT MsgTag ( [out, retval] LONG *pVal );
+
+    [propget, id(24), helpstring("The current message's P2PMsgFlag bits. "
+                                 "Valid only inside an OnMessage handler.")]
+    HRESULT MsgFlags ( [out, retval] LONG *pVal );
+
+    // Send/Broadcast, saying the three things they could not.  Every argument
+    // past the payload has a default, so `hub.SendEx dest, topic, body, tag`
+    // is the ordinary call and the rest is there when it is wanted.
+    //
+    // The tag is a LONG here and an unsigned 32-bit value in the flat ABI; the
+    // bits round-trip either way, so a script that puts a large value in reads
+    // the same large value back as a negative LONG.
+    [id(25), helpstring("Unicast with a correlation tag, priority and send flags.")]
+    HRESULT SendEx ( [in] BSTR dest, [in] BSTR topic, [in] VARIANT payload,
+                     [in, defaultvalue(0)]  LONG tag,
+                     [in, defaultvalue(-1)] LONG priority,
+                     [in, defaultvalue(0)]  LONG flags );
+
+    [id(26), helpstring("Broadcast with a correlation tag, priority and send flags; "
+                        "False if no peer was up.")]
+    HRESULT BroadcastEx ( [in] BSTR topic, [in] VARIANT payload,
+                          [in, defaultvalue(0)]  LONG tag,
+                          [in, defaultvalue(-1)] LONG priority,
+                          [in, defaultvalue(0)]  LONG flags,
+                          [out, retval] VARIANT_BOOL *pDelivered );
+
+    // --- named fields (facade ABI 8) --------------------------------------
+    //
+    // Appended again; 1-26 keep their numbers and the IID is unchanged.
+    //
+    // The three READ members follow the ABI 7 properties exactly, for exactly
+    // the same reason: the facade is asked while the message is being
+    // delivered on the pump thread -- the only moment it may be asked -- and
+    // the answers travel with the queued copy. They are therefore valid
+    // inside an OnMessage handler and answer p2pfNoMessage anywhere else.
+    // Capturing them costs nothing on a message that carries no fields,
+    // because MsgFlags says so before anything is copied.
+    [id(27), helpstring("Unicast a message object with named fields.")]
+    HRESULT SendMsg ( [in] BSTR dest, [in] BSTR topic, [in] IP2PMessageCom *msg,
+                      [in, defaultvalue(0)]  LONG tag,
+                      [in, defaultvalue(-1)] LONG priority,
+                      [in, defaultvalue(0)]  LONG flags );
+
+    [id(28), helpstring("Broadcast a message object; False if no peer was up.")]
+    HRESULT BroadcastMsg ( [in] BSTR topic, [in] IP2PMessageCom *msg,
+                           [in, defaultvalue(0)]  LONG tag,
+                           [in, defaultvalue(-1)] LONG priority,
+                           [in, defaultvalue(0)]  LONG flags,
+                           [out, retval] VARIANT_BOOL *pDelivered );
+
+    [propget, id(29), helpstring("How many fields the current message carries. "
+                                 "Valid only inside an OnMessage handler.")]
+    HRESULT MsgFieldCount ( [out, retval] LONG *pVal );
+
+    [id(30), helpstring("One field name of the current message, by position. "
+                        "Valid only inside an OnMessage handler.")]
+    HRESULT MsgFieldName ( [in] LONG index, [out, retval] BSTR *pVal );
+
+    [id(31), helpstring("One field of the current message, as a byte array. "
+                        "Valid only inside an OnMessage handler.")]
+    HRESULT MsgField ( [in] BSTR name, [out, retval] VARIANT *pVal );
+};
+
+// ---------------------------------------------------------------------------
+// A message with named fields (facade ABI 8).
+//
+// A VALUE, and everything odd-looking about it follows from that: it is
+// noncreatable (P2PNetwork.CreateMessage makes one -- it belongs to no hub and
+// there is nothing for CoCreateInstance to do), it is not consumed by sending,
+// and the same one may be handed to SendMsg twenty times.
+//
+// The point of it is that structure in a message no longer requires inventing
+// an encoding for the payload and agreeing that encoding at both ends. Fields
+// travel BESIDE the payload, so a peer that knows nothing about them reads the
+// payload it always read.
+// ---------------------------------------------------------------------------
+[
+    object,
+    uuid(6B3F27D4-9A18-4C55-8E0B-1F7A4D2C6E39),
+    dual,
+    nonextensible,
+    pointer_default(unique),
+    helpstring("A payload plus named fields (wraps p2pf::IP2PMessage).")
+]
+interface IP2PMessageCom : IDispatch
+{
+    [id(1), helpstring("The opaque payload -- exactly what Send's payload means.")]
+    HRESULT SetPayload ( [in] VARIANT payload );
+
+    // A NULL/empty value is a legal EMPTY field, which is a different thing
+    // from an absent one: GetField answers an empty array where an absent
+    // field raises p2pfNoField. Presence is a signal in its own right.
+    [id(2), helpstring("Set one named field to a byte array or string.")]
+    HRESULT SetField ( [in] BSTR name, [in] VARIANT value );
+
+    [id(3), helpstring("Set one named field to a string, including its terminator.")]
+    HRESULT SetFieldText ( [in] BSTR name, [in] BSTR text );
+
+    [id(4), helpstring("Remove one field; False if there was none of that name.")]
+    HRESULT RemoveField ( [in] BSTR name, [out, retval] VARIANT_BOOL *pRemoved );
+
+    [propget, id(5), helpstring("How many fields are set.")]
+    HRESULT FieldCount ( [out, retval] LONG *pVal );
+
+    [id(6), helpstring("One field's name, by position, in the order they were set.")]
+    HRESULT FieldName ( [in] LONG index, [out, retval] BSTR *pVal );
+
+    [id(7), helpstring("One field's value, as a byte array.")]
+    HRESULT GetField ( [in] BSTR name, [out, retval] VARIANT *pVal );
+
+    [id(8), helpstring("Drop the payload and every field, so it can be reused.")]
+    HRESULT Clear ( );
+};
+
+[
+    object,
+    uuid(319ECAAE-00D7-4B11-AA4D-94BF2934F5F8),
+    dual,
+    nonextensible,
+    pointer_default(unique),
+    helpstring("The one init object (wraps p2pf::IP2PNetwork).")
+]
+interface IP2PNetworkCom : IDispatch
+{
+    [id(1), helpstring("Create and start a hub at the given address.")]
+    HRESULT CreateHub ( [in] BSTR address, [out, retval] IP2PHubCom **ppHub );
+
+    [propget, id(2), helpstring("Facade + kernel build tag, for logs.")]
+    HRESULT VersionString ( [out, retval] BSTR *pVal );
+
+    [propget, id(3), helpstring("Largest payload Send/Broadcast will accept, in bytes.")]
+    HRESULT MaxPayload ( [out, retval] LONG *pVal );
+
+    // APPENDED, same additive rule the read side used on IP2PHubCom: dispids
+    // 1-3 keep their numbers and the vtable keeps a compatible prefix, so the
+    // IID does not change.
+    //
+    // The network is the only object holding every live hub in the process, so
+    // it is the only one that can arm both ends of an edge -- and it arms them
+    // in the order that works.  That matters most to THIS tier: a script has no
+    // way to learn that a dmx:// or serial:// dial does not retry and so the
+    // listening side must go first.  Link deletes that folklore from every
+    // in-process call site.
+    //
+    //   net.Link "Demo", "Demo.Client", ""     ' zero-configuration in-process
+    //
+    // The arguments are NOT interchangeable: `listenerAddr` gets the passive
+    // endpoint, `dialerAddr` the active one.  An omitted or empty `endpoint`
+    // selects an in-process Dmx service named after the ordered pair.
+    //
+    // Like Listen/Connect, this can return the SUCCESS code
+    // p2pfUnrelatedLink, which automation discards -- so if the topology
+    // matters, ask afterwards: hub.RelationTo(peer) or hub.Description.
+    [id(4), helpstring("Arm BOTH ends of one edge between two hubs of this network, "
+                       "listener first. Empty endpoint = an in-process link.")]
+    HRESULT Link ( [in] BSTR listenerAddr, [in] BSTR dialerAddr,
+                   [in, defaultvalue("")] BSTR endpoint );
+
+    // APPENDED again, dispids 5-7, same additive rule: the IID does not change.
+    //
+    // The deployment map -- where each ADDRESS lives, in dial form.  This tier
+    // is the one that wanted it most.  A script had no way to arm anything
+    // without spelling an endpoint at the call site, so a VBScript deployment
+    // meant editing the script; now it means editing a text file, and the
+    // script says only which hubs exist and who talks to whom:
+    //
+    //   net.SetEndpointMap CreateObject("Scripting.FileSystemObject") _
+    //                        .OpenTextFile("peers.ini").ReadAll()
+    //   hub.Listen  "Demo.Client", ""     ' no endpoint anywhere in the script
+    //   hub.Connect "Demo.Server", ""
+    //
+    // One table serves both verbs because it is keyed by ADDRESS: a Connect
+    // looks up its PEER, a Listen looks up THIS HUB'S OWN address and drops the
+    // host.  An omitted endpoint consults the map FIRST and only then falls
+    // back on the in-process convention.
+    //
+    // A bad line raises a script error naming the LINE NUMBER, which is the
+    // whole reason this validates at set time -- Err.Description reads
+    // "line 7: ..." instead of an endpoint failure surfacing hours later from
+    // a Connect somewhere else.
+    [id(5), helpstring("Set (or, with an empty endpoint, clear) where ONE address lives.")]
+    HRESULT SetEndpoint ( [in] BSTR address, [in, defaultvalue("")] BSTR endpoint );
+
+    [id(6), helpstring("REPLACE the whole map from 'address = endpoint' lines. "
+                       "'#' and ';' comment; empty text clears it. All or nothing.")]
+    HRESULT SetEndpointMap ( [in, defaultvalue("")] BSTR text );
+
+    [id(7), helpstring("What the MAP says about an address (not what a hub armed -- "
+                       "that is IP2PHubCom.EndpointFor). Empty if there is no entry.")]
+    HRESULT EndpointFor ( [in] BSTR address, [out, retval] BSTR *pVal );
+
+    // Here rather than on a hub because an IP2PMessageCom belongs to no hub:
+    // it holds no reference to one, and the same object may be sent by any
+    // hub, repeatedly. Putting the factory on a hub would imply a coupling
+    // that does not exist, and raise a question about what happens when that
+    // hub closes, which does not arise. (facade ABI 8)
+    [id(8), helpstring("Make an empty message to fill in and hand to SendMsg.")]
+    HRESULT CreateMessage ( [out, retval] IP2PMessageCom **ppMessage );
+};
+
+[
+    uuid(EACCF9B6-48FF-4F4B-9B10-CC5D3046639C),
+    version(1.0),
+    helpstring("TargetCom 1.0 -- COM layer over TargetFacade")
+]
+library TargetComLib
+{
+    importlib("stdole2.tlb");
+
+    typedef [uuid(F343F374-2941-4089-97C2-E423C70EA1CA), v1_enum, public,
+             helpstring("Facade-specific HRESULTs, as returned by these methods.")]
+    enum P2PFError
+    {
+        [helpstring("Header/DLL ABI version differ")]      p2pfAbiMismatch   = 0x80040200,
+        [helpstring("Kernel/WinSock startup failed")]      p2pfStartup       = 0x80040201,
+        [helpstring("Hub pump thread failed to start")]    p2pfHubSpawn      = 0x80040202,
+        [helpstring("Transport endpoint creation failed")] p2pfConFactory    = 0x80040203,
+        [helpstring("Peer address already on this hub")]   p2pfConDuplicate  = 0x80040204,
+        [helpstring("Topic starts with the reserved P2Pmsg")] p2pfReservedTopic = 0x80040205,
+        [helpstring("Hub or network already closed")]      p2pfClosed        = 0x80040206,
+        [helpstring("A live hub already has this address")] p2pfHubDuplicate = 0x80040207,
+        [helpstring("Endpoint string unparseable or unsupported")] p2pfEndpoint = 0x80040208,
+        [helpstring("Endpoint omitted and nothing to resolve it to")] p2pfUnresolved = 0x80040209,
+        [helpstring("No live hub of that address in this process")] p2pfNoHub = 0x8004020A,
+        [helpstring("Link failed AND the listener could not be retracted")] p2pfLinkPartial = 0x8004020B,
+        // SUCCESS code, not an error: the link IS armed, but the two addresses
+        // are neither ancestor nor descendant of one another, so the edge can
+        // never be a transit hop.  Note the leading 0 -- test for it by value.
+        [helpstring("Armed, but the two addresses are unrelated")] p2pfUnrelatedLink = 0x0004020C,
+        // --- facade ABI 6 ---
+        [helpstring("This hub has no connection for that peer")] p2pfNoPeer = 0x8004020D,
+        [helpstring("Ping: no answer inside the budget")] p2pfTimeout = 0x8004020E,
+        [helpstring("Nothing is registered to receive it")] p2pfNoSink = 0x8004020F,
+        [helpstring("Unknown option, or a Set on a read-only one")] p2pfOption = 0x80040210,
+        [helpstring("A waiting call was made from the pump thread")] p2pfPumpThread = 0x80040211,
+        // --- facade ABI 7 ---
+        [helpstring("Asked about the current message outside an OnMessage event")]
+                                                                    p2pfNoMessage = 0x80040212,
+        // --- facade ABI 8 ---
+        [helpstring("This message carries no field of that name")]   p2pfNoField    = 0x80040213,
+        [helpstring("Too many fields, or a name or value too large")] p2pfFieldLimit = 0x80040214
+    } P2PFError;
+
+    // Where a message sits in the receiving pump's queue when more than one is
+    // waiting.  On a hub that is keeping up nothing is ever waiting and this
+    // changes nothing, which is why the kernel's own header says to leave it
+    // alone unless you mean it -- p2pfPriDefault does exactly that.
+    typedef [uuid(4A1B7C90-6E23-4D8F-9A55-0F3C2E1B7D48), v1_enum, public,
+             helpstring("Message priority for SendEx / BroadcastEx.")]
+    enum P2PPriority
+    {
+        [helpstring("Reserved by the kernel for control sequences")] p2pfPriFlush   = 0,
+        [helpstring("Ahead of normal traffic")]                      p2pfPriHigh    = 2,
+        [helpstring("The kernel's default")]                         p2pfPriNormal  = 7,
+        [helpstring("Behind normal traffic")]                        p2pfPriLow     = 12,
+        [helpstring("Leave the priority untouched -- same as Send")] p2pfPriDefault = -1
+    } P2PPriority;
+
+    // Fire and forget.  A peer that will not handle this message says nothing
+    // back -- see SendEx.  It does NOT cover an address that could not be
+    // routed to at all: that bounce is the kernel's and cannot be suppressed
+    // from here.
+    typedef [uuid(8E5D2F17-3A64-4B19-BC70-5D9E4A2C6F81), v1_enum, public,
+             helpstring("Flags for SendEx / BroadcastEx.")]
+    enum P2PSendFlag
+    {
+        [helpstring("A peer that declines this says nothing back")] p2pfSendNoBounce = 0x0001
+    } P2PSendFlag;
+
+    // What MsgFlags answers during an OnMessage event.
+    typedef [uuid(1F7A9B3C-5E48-4C2D-8B06-3A1D7F4E9C25), v1_enum, public,
+             helpstring("The bits MsgFlags carries.")]
+    enum P2PMsgFlag
+    {
+        [helpstring("Arrived as a broadcast")]                     p2pfMsgBroadcast = 0x0001,
+        [helpstring("Declining it would actually reach the sender")] p2pfMsgBounces = 0x0002,
+        [helpstring("Carries a wrapped message")]                  p2pfMsgWrapped   = 0x0004,
+        [helpstring("Came back off a reflector")]                  p2pfMsgReflected = 0x0008,
+        [helpstring("Carries named fields")]                       p2pfMsgFields    = 0x0010
+    } P2PMsgFlag;
+
+    // What SetConOption / GetConOption select.  These reach the P2Peerio
+    // object the kernel hangs off each connection -- the knobs that decide how
+    // a link behaves once it is up, none of which had any face before ABI 6.
+    typedef [uuid(6E2C9A21-1B2A-4C6C-9E20-0C1C1F1D5A31), v1_enum, public,
+             helpstring("Per-connection options for Set/GetConOption.")]
+    enum P2PConOption
+    {
+        [helpstring("get/set 0|1: P2Peerio wire trace")]            p2pfOptTrace     = 1,
+        [helpstring("get/set bytes: send limit")]                   p2pfOptMaxSend   = 2,
+        [helpstring("get/set bytes: receive limit")]                p2pfOptMaxRecv   = 3,
+        [helpstring("GET ONLY 0|1: the key exchange completed")]    p2pfOptEncrypted = 4,
+        [helpstring("GET ONLY: connection state bits (P2PConState)")] p2pfOptConState = 5,
+        [helpstring("GET ONLY: what this connection IS (P2PConMode)")] p2pfOptMode   = 6
+    } P2PConOption;
+
+    typedef [uuid(0B7E5E52-9E2F-4C0F-9C39-6C4E2B7C8D14), v1_enum, public,
+             helpstring("What GetConOption(p2pfOptMode) answers.")]
+    enum P2PConMode
+    {
+        [helpstring("Not yet known")]                          p2pfModeUnknown  = 0,
+        [helpstring("Active: this side dialled")]              p2pfModeDial     = 1,
+        [helpstring("Passive: this side listened")]            p2pfModeListen   = 2,
+        [helpstring("Spawned by a listener when a peer arrived")] p2pfModeAccepted = 3
+    } P2PConMode;
+
+    typedef [uuid(2D0F41C6-6C1B-4E44-9C0E-3A4F0C5A9E77), v1_enum, public,
+             helpstring("The bits GetConOption(p2pfOptConState) answers.")]
+    enum P2PConState
+    {
+        [helpstring("Relays broadcasts")]     p2pfStateBCasts      = 0x0001,
+        [helpstring("Relays unicasts")]       p2pfStateUCasts      = 0x0002,
+        [helpstring("Receiving")]             p2pfStateRecv        = 0x0004,
+        [helpstring("Sending")]               p2pfStateSend        = 0x0008,
+        [helpstring("Key exchange done")]     p2pfStatePKey        = 0x0010,
+        [helpstring("Logged in")]             p2pfStateLogin       = 0x0020,
+        [helpstring("Will close when idle")]  p2pfStateCloseOnIdle = 0x0040
+    } P2PConState;
+
+    // The code OnEvent carries.  Branch on THIS, never on the wording of the
+    // sentence beside it -- which is exactly what OnError alone forced every
+    // automation client to do.
+    typedef [uuid(9C3A6D18-5F41-4B6E-B2A0-7E4C1B9D3F62), v1_enum, public,
+             helpstring("The classification OnEvent carries.")]
+    enum P2PEventCode
+    {
+        [helpstring("Armed, but the peer is neither ancestor nor descendant")] p2pfEvtUnrelatedLink = 1,
+        [helpstring("A resolved dmx dial spent its rendezvous budget")]        p2pfEvtDialGaveUp    = 2,
+        [helpstring("A message this hub sent came back undelivered or unhandled")]
+                                                                              p2pfEvtRoutingError  = 3,
+        [helpstring("Anything else the hub wants to say")]                     p2pfEvtHubError      = 4
+    } P2PEventCode;
+
+    // The flags RelationTo returns, and the same vocabulary Description prints
+    // in words.  Two independent halves of one LONG:
+    //
+    //   * what THIS HUB DID -- listen / dial / up.  Neither of the first two
+    //     is meaningful when a wildcard listener adopted the name at login:
+    //     the hub never armed anything for that peer specifically, and has no
+    //     endpoint of its own to report for it.
+    //   * WHERE THE PEER SITS in the dotted address tree, relative to this
+    //     hub.  EXACTLY ONE of the p2pfRel* bits is set.  p2pfRelUnrelated is
+    //     the one worth branching on: the edge is armed and carries direct
+    //     traffic, but it can never be a transit hop.
+    typedef [uuid(FD4E45F0-8F46-4515-BB71-87CB3520F823), v1_enum, public,
+             helpstring("Per-peer connection flags, as returned by RelationTo.")]
+    enum P2PConFlag
+    {
+        [helpstring("This hub armed a passive endpoint for the peer")] p2pfConListen     = 0x0001,
+        [helpstring("This hub armed an active endpoint for the peer")] p2pfConDial       = 0x0002,
+        [helpstring("Logged in right now")]                            p2pfConUp         = 0x0004,
+        [helpstring("The peer's address IS this hub's address")]       p2pfRelSelf       = 0x0100,
+        [helpstring("Below me: 'App' -> 'App.B'")]                     p2pfRelDescendant = 0x0200,
+        [helpstring("Above me: 'App.B' -> 'App'")]                     p2pfRelAncestor   = 0x0400,
+        [helpstring("Sibling or another tree -- NO TRANSIT")]          p2pfRelUnrelated  = 0x0800,
+        [helpstring("A P2Padomain pattern: unknowable until login")]   p2pfRelPattern    = 0x1000
+    } P2PConFlag;
+
+    [
+        uuid(5EFF43D2-F741-489E-B090-612904CC3CA8),
+        helpstring("Hub events. Raised on a dedicated dispatch thread, never on "
+                   "the kernel pump thread, and marshalled into the sink's apartment.")
+    ]
+    dispinterface _IP2PHubEvents
+    {
+        properties:
+        methods:
+            [id(1), helpstring("A message reached this hub. Payload is a byte array.")]
+            void OnMessage ( [in] BSTR source, [in] BSTR topic,
+                             [in] VARIANT payload, [in] VARIANT_BOOL broadcast );
+
+            [id(2), helpstring("A connection to this peer finished logging in.")]
+            void OnPeerUp ( [in] BSTR peer );
+
+            [id(3), helpstring("A connection to this peer closed.")]
+            void OnPeerDown ( [in] BSTR peer );
+
+            // Not merely informational: for an automation client this is the
+            // only PUSHED report of a condition the HRESULT could not carry --
+            // the sibling-link warning above all.  Log it at warning level, but
+            // branch on RelationTo, never on the wording.
+            [id(4), helpstring("Routing/kernel error or topology warning; the hub keeps running.")]
+            void OnError ( [in] BSTR what );
+
+            // --- facade ABI 6 -------------------------------------------
+            //
+            // OnEvent is the STRUCTURED half of OnError, and both are raised:
+            // OnError exactly as before, then OnEvent with the same sentence
+            // plus a code and the peer it is about.  The flat ABI substitutes
+            // one for the other; this tier cannot, because OnError is
+            // published and a sink that only handles it must keep working.  A
+            // client that handles both will see each condition twice, by
+            // design -- handle OnEvent and ignore OnError in new code.
+            [id(5), helpstring("The same report as OnError, with a P2PEventCode "
+                               "and the peer it concerns. Branch on the code.")]
+            void OnEvent ( [in] LONG code, [in] BSTR peer, [in] BSTR what );
+
+            [id(6), helpstring("A timer armed with SetTimer has elapsed.")]
+            void OnTimer ( [in] LONG timerId, [in] LONG key );
+    };
+
+    [
+        uuid(AC8A3AD3-F73E-467C-952C-AED2762C00C3),
+        helpstring("TargetCom.P2PNetwork -- create this one, then CreateHub.")
+    ]
+    coclass P2PNetwork
+    {
+        [default] interface IP2PNetworkCom;
+    };
+
+    [
+        uuid(722D9690-2DE1-4E40-888E-CD394F73D18A),
+        noncreatable,
+        helpstring("Returned by P2PNetwork.CreateHub; never CoCreated directly.")
+    ]
+    coclass P2PHub
+    {
+        [default] interface IP2PHubCom;
+        [default, source] dispinterface _IP2PHubEvents;
+    };
+
+    [
+        uuid(4E9C1B0A-72D6-4F83-B145-8C2E7A5D3016),
+        noncreatable,
+        helpstring("A payload plus named fields. Made by P2PNetwork.CreateMessage.")
+    ]
+    coclass P2PMessage
+    {
+        [default] interface IP2PMessageCom;
+    };
+};
