@@ -309,6 +309,10 @@ class Network
     // `flags` is P2PF_HUB_SPAWN_PUMP (the default -- the hub gets a thread of
     // its own) or P2PF_HUB_CALLER_PUMPED, in which case the hub runs on THIS
     // thread and does nothing until this thread calls Hub::pump or Hub::run.
+    // OR in P2PF_HUB_SECURE for a hub that holds an identity and demands a
+    // signed login from every peer it links to -- see IP2PHub::GetSecurityInfo
+    // for the whole of what that arranges, and Hub::securityFlags to read it
+    // back.  (ABI 11)
     inline Hub createHub ( const wchar_t *address
                          , unsigned int flags = P2PF_HUB_SPAWN_PUMP ); // below
 
@@ -329,6 +333,12 @@ class Network
     HRESULT link ( const wchar_t *listenerAddr, const wchar_t *dialerAddr
                  , const wchar_t *endpoint = nullptr )
                                       { return m_pNet->Link ( listenerAddr, dialerAddr, endpoint ); }
+
+    // Where every SECURE hub of this process keeps its key material.
+    // Omitted/empty = a "p2p" directory beside the loaded module.  Call it
+    // before the first createHub(addr, P2PF_HUB_SECURE).  (ABI 11)
+    HRESULT setSecurityDir ( const wchar_t *dir = nullptr )
+                                      { return m_pNet->SetSecurityDir ( dir ); }
 
     // The deployment map: where each ADDRESS lives, in dial form.  An omitted
     // endpoint on listen()/connect() consults this before it falls back on the
@@ -782,6 +792,38 @@ class Hub
     }
 
     HRESULT closeIdleCons ( )         { return m_pHub->CloseIdleCons(); }
+
+    // --- security (ABI 11) -------------------------------------------------
+    //
+    // Both answer for a PLAIN hub too, and the answers are 0 and empty: a hub
+    // not created with P2PF_HUB_SECURE holds no identity and enforces nothing.
+
+    // This hub's posture, as P2PF_SEC_* bits read back from the kernel.  The
+    // one worth testing is P2PF_SEC_ARMED, which is not implied by
+    // P2PF_SEC_REQUIRED -- see IP2PHub::GetSecurityInfo.
+    unsigned int securityFlags ( ) const
+    {
+        unsigned int flags = 0;
+        return ( m_pHub &&
+                 SUCCEEDED ( m_pHub->GetSecurityInfo ( nullptr, nullptr, &flags ) ) )
+             ? flags : 0u;
+    }
+    bool isSecure ( ) const           { return ( securityFlags() & P2PF_SEC_CAN_SIGN ) != 0; }
+
+    // This hub's identity FINGERPRINT, for a human to compare -- and never an
+    // identifier this code trusts.  Empty for a plain hub.
+    std::wstring securityFingerprint ( ) const
+    {
+        unsigned int cch = 0;
+        if ( !m_pHub ||
+             FAILED ( m_pHub->GetSecurityInfo ( nullptr, &cch, nullptr ) ) || cch <= 1 )
+            return std::wstring();
+        std::wstring s ( cch, L'\0' );
+        if ( FAILED ( m_pHub->GetSecurityInfo ( &s[0], &cch, nullptr ) ) )
+            return std::wstring();
+        s.resize ( cch ? cch - 1 : 0 );
+        return s;
+    }
 
     // --- driving the pump yourself (ABI 9) ---------------------------------
     //

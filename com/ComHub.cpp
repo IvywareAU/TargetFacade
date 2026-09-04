@@ -218,6 +218,25 @@ static LPCWSTR MeaningOf ( HRESULT hr )
       case p2pf::P2PF_E_HUB_SPAWN:
         return L"the hub's pump thread failed to start.";
 
+      // --- facade ABI 11 ---
+      case p2pf::P2PF_E_SECURITY:
+        return L"a secure hub could not be provisioned, would not arm, or has no "
+               L"key for the peer that was named -- and NOTHING WAS ARMED. Which "
+               L"file, and what is wrong with it, is on the facade's diagnostic "
+               L"stream as an error. Three causes cover almost every case. Linking "
+               L"a secure hub to a PLAIN one: authentication is enforced per HUB "
+               L"with no per-connection override, so both ends must come from "
+               L"CreateSecureHub or neither. Listen/Connect to a peer whose "
+               L"published key files are not in the security directory: copy that "
+               L"peer's '<name>.key.pub' and '<name>.agree.pub' across -- that IS "
+               L"the provisioning step, and it is the one part no library can do "
+               L"for you. And a key directory that cannot be written, or a key file "
+               L"copied from another machine (identity files are protected "
+               L"per-machine, so a foreign one will not load); name a writable "
+               L"directory with SetSecurityDir, before the first CreateSecureHub. "
+               L"Deleting the 'p2p' folder re-provisions from scratch, and changes "
+               L"every hub's identity.";
+
       // --- facade ABI 6 ---
       case p2pf::P2PF_E_NO_PEER:
         return L"this hub has no connection for that peer. Disconnect and the "
@@ -329,7 +348,8 @@ CP2PHubCom::CP2PHubCom ( )
     m_sink.owner = this;
 }
 
-HRESULT CP2PHubCom::Init ( p2pf::IP2PNetwork *pNet, CP2PNetworkCom *pOwner, LPCWSTR wszAddress )
+HRESULT CP2PHubCom::Init ( p2pf::IP2PNetwork *pNet, CP2PNetworkCom *pOwner, LPCWSTR wszAddress
+                         , unsigned int uFlags )
 {
     m_pOwner = pOwner;
 
@@ -354,7 +374,7 @@ HRESULT CP2PHubCom::Init ( p2pf::IP2PNetwork *pNet, CP2PNetworkCom *pOwner, LPCW
 
     // Started last: from here on callbacks may arrive, and the queue + thread
     // are already able to take them.
-    HRESULT hr = pNet->CreateHub ( wszAddress, &m_sink, &m_pHub );
+    HRESULT hr = pNet->CreateHubEx ( wszAddress, &m_sink, uFlags, &m_pHub );
     if ( SUCCEEDED(hr) )
     {
         // One object, both interfaces (facade ABI 6). This is what brings
@@ -844,6 +864,59 @@ STDMETHODIMP CP2PHubCom::MsgField ( BSTR name, VARIANT *pVal )
                               , (unsigned int)v.size(), pVal );
     }
     return Fail ( p2pf::P2PF_E_NO_FIELD, L"MsgField", name );
+}
+
+//
+//  This hub's security posture, as a sentence               (facade ABI 11)
+//  NOTES: PROSE AND NOT A BIT FIELD, for the reason Description is prose: a
+//         script asking whether security is on is reading the answer, not
+//         masking it, and a returned number would need the P2PF_SEC_*
+//         constants published to a tier that has no header to publish them in
+//       : A PLAIN HUB ANSWERS TOO, with "(none)" for the fingerprint and zeros
+//         across.  Asking whether a hub is secure should not be an error, and
+//         the honest answer for a hub nobody secured is "it is not"
+//       : The fingerprint is first because it is the field a human acts on --
+//         it is what an operator reads down a phone line -- and it is never an
+//         identifier this code trusts
+//
+STDMETHODIMP CP2PHubCom::get_SecurityInfo ( BSTR *pVal )
+{
+    if ( pVal == NULL ) return E_POINTER;
+    *pVal = NULL;
+
+    if ( m_pHub == NULL )
+        return Fail ( p2pf::P2PF_E_CLOSED, L"SecurityInfo" );
+
+    unsigned int cch = 0, uFlags = 0;
+    HRESULT hr = m_pHub->GetSecurityInfo ( NULL, &cch, &uFlags );
+    if ( FAILED(hr) )
+        return Fail ( hr, L"SecurityInfo" );
+
+    ATL::CComBSTR bsFp;
+    if ( cch > 1 )
+    {
+        bsFp.Attach ( ::SysAllocStringLen ( NULL, cch - 1 ) );
+        if ( !bsFp )
+            return Fail ( E_OUTOFMEMORY, L"SecurityInfo" );
+        hr = m_pHub->GetSecurityInfo ( (wchar_t*)(BSTR)bsFp, &cch, NULL );
+        if ( FAILED(hr) )
+            return Fail ( hr, L"SecurityInfo" );
+    }
+
+    wchar_t wszLine [ 320 ];
+    ::swprintf_s ( wszLine
+                 , L"fingerprint=%s required=%d armed=%d signs=%d opens=%d "
+                   L"seals=%d revocation=%d"
+                 , ( bsFp.Length ( ) > 0 ) ? (BSTR)bsFp : L"(none)"
+                 , ( uFlags & p2pf::P2PF_SEC_REQUIRED   ) ? 1 : 0
+                 , ( uFlags & p2pf::P2PF_SEC_ARMED      ) ? 1 : 0
+                 , ( uFlags & p2pf::P2PF_SEC_CAN_SIGN   ) ? 1 : 0
+                 , ( uFlags & p2pf::P2PF_SEC_CAN_OPEN   ) ? 1 : 0
+                 , ( uFlags & p2pf::P2PF_SEC_SEALED     ) ? 1 : 0
+                 , ( uFlags & p2pf::P2PF_SEC_REVOCATION ) ? 1 : 0 );
+
+    *pVal = ::SysAllocString ( wszLine );
+    return ( *pVal != NULL ) ? S_OK : Fail ( E_OUTOFMEMORY, L"SecurityInfo" );
 }
 
 // ---------------------------------------------------------------------------

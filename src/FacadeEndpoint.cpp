@@ -75,20 +75,6 @@ IsAnyHost ( const CString& csHost )
            csHost == L"0.0.0.0";
 }
 
-// Characters that make a peer a P2Padomain PATTERN rather than a literal
-// address (P2Peer.cpp:450-491, :531, :611-725).  Their presence means the far
-// side's real name is chosen at login, so nothing about the address tree can
-// be concluded at arm time.
-bool
-IsPattern ( const wchar_t *lpsz )
-{
-    for ( const wchar_t *p = lpsz; *p; ++p )
-      if ( *p == L'*' || *p == L'?' || *p == L'#' ||
-           *p == L'|' || *p == L'<' || *p == L'>' || *p == L',' )
-        return true;
-    return false;
-}
-
 //
 //  TRUE when lpszChild names a hub below lpszParent in the address tree
 //  NOTES: Prefix on a DOT BOUNDARY, matching P2Paddr::IsChild -- so skip
@@ -109,6 +95,25 @@ IsBelow ( const wchar_t *lpszParent, const wchar_t *lpszChild )
 }
 
 } // namespace
+
+// Characters that make a peer a P2Padomain PATTERN rather than a literal
+// address (P2Peer.cpp:450-491, :531, :611-725).  Their presence means the far
+// side's real name is chosen at login, so nothing about the address tree can
+// be concluded at arm time.
+//
+// OUT of the anonymous namespace above, and deliberately: a SECURE hub has to
+// ask this before it arms anything (FacadeHub::AdmitPatternPeer), because a
+// pattern is the one peer whose key cannot be looked up.  It is declared in
+// FacadeEndpoint.h for that one caller.
+bool
+IsPattern ( const wchar_t *lpsz )
+{
+    for ( const wchar_t *p = lpsz; *p; ++p )
+      if ( *p == L'*' || *p == L'?' || *p == L'#' ||
+           *p == L'|' || *p == L'<' || *p == L'>' || *p == L',' )
+        return true;
+    return false;
+}
 
 ///////////////////////////////////////////////////////////////////////
 //  Formatting

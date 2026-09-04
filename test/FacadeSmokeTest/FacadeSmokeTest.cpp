@@ -538,6 +538,174 @@ int main ( )
             "Link with a serial endpoint is refused, not half-armed" );
 
     // -----------------------------------------------------------------
+    // 14b. A SECURE HUB: authentication, per hub               (ABI 11)
+    //
+    // What this section is really checking is that the security is ON
+    // rather than that the link works. A link that works is what section
+    // 14 already proved, and a secure hub that quietly fell back to a
+    // plain one would pass every message check here -- so the assertions
+    // that matter are the POSTURE ones: ARMED, and not merely REQUIRED.
+    //
+    // The keys land in a "p2p" folder beside TargetFacade.dll and are
+    // FOUND rather than regenerated on the next run, which is deliberate:
+    // a first-run helper that rotated on restart would change every hub's
+    // identity behind the operator's back. Deleting that folder
+    // re-provisions from scratch.
+    // -----------------------------------------------------------------
+    {
+      std::printf ( "\n-- a secure hub --\n" );
+
+      Flag oSecUp, oSecMsg, oThirdUp;
+      std::string strSec;
+
+      p2pf::Hub scA = net.createHub ( L"Sec",      p2pf::P2PF_HUB_SECURE );
+      p2pf::Hub scB = net.createHub ( L"Sec.Node", p2pf::P2PF_HUB_SECURE );
+
+      // BEFORE ANY LINK. The hub holds its keys from the moment it exists
+      // -- CAN_SIGN, CAN_OPEN and a revocation position -- and requires
+      // nothing yet, because an allow-list that lists nobody refuses
+      // everybody and the kernel will not start such a hub at all.
+      const unsigned int uFresh = scA.securityFlags ( );
+      Check ( ( uFresh & p2pf::P2PF_SEC_CAN_SIGN   ) &&
+              ( uFresh & p2pf::P2PF_SEC_CAN_OPEN   ) &&
+              ( uFresh & p2pf::P2PF_SEC_REVOCATION ),
+              "a secure hub holds both keys and a revocation position at birth" );
+      Check ( ( uFresh & p2pf::P2PF_SEC_REQUIRED ) == 0,
+              "...and requires nothing yet, having nobody to require it of" );
+
+      scA.onTopic  ( L"ping", [&](const p2pf::Message& m)
+                     {
+                       const wchar_t *w = m.text();
+                       while ( w && *w ) strSec += (char)*w++;
+                       oSecMsg.Set();
+                     } );
+      scB.onPeerUp ( [&](const wchar_t*){ oSecUp.Set(); } );
+
+      // PLAIN Link, and that is the point: the verb did not change. Both
+      // hubs said what they were when they were CREATED, so this call has
+      // nothing left to decide.
+      Check ( net.link ( L"Sec", L"Sec.Node" ) == S_OK,
+              "Link armed both sides, trading their keys as it went" );
+      Check ( oSecUp.Wait ( 10000 ),
+              "...and the peer came up, which means the SIGNED login completed" );
+      Check ( scB.sendText ( L"Sec", L"ping", L"secured" ) == S_OK &&
+              oSecMsg.Wait ( 5000 ) && strSec == "secured",
+              "...and a payload round-tripped over the cyphered session" );
+
+      // THE CHECK THAT SEPARATES THIS FROM SECTION 14. ARMED and not just
+      // REQUIRED: a hub can require authentication and be unable to
+      // perform it, and that combination refuses every peer rather than
+      // authenticating any.
+      const unsigned int uWant = p2pf::P2PF_SEC_REQUIRED
+                               | p2pf::P2PF_SEC_ARMED
+                               | p2pf::P2PF_SEC_CAN_SIGN
+                               | p2pf::P2PF_SEC_CAN_OPEN
+                               | p2pf::P2PF_SEC_REVOCATION;
+      const unsigned int uA = scA.securityFlags ( );
+      const unsigned int uB = scB.securityFlags ( );
+      Check ( ( uA & uWant ) == uWant && ( uB & uWant ) == uWant,
+              "both hubs require auth, CAN enforce it, and hold both keys" );
+
+      // Sealing is deliberately NOT required -- it is a property of an
+      // origin and a destination, and this flag secures a hub and its
+      // EDGES. See IP2PHub::GetSecurityInfo, "what it deliberately does
+      // not turn on".
+      Check ( ( uA & p2pf::P2PF_SEC_SEALED ) == 0,
+              "...and sealing is left off, which is the honest scope" );
+
+      const std::wstring fpA = scA.securityFingerprint ( );
+      const std::wstring fpB = scB.securityFingerprint ( );
+      Check ( !fpA.empty() && !fpB.empty() && fpA != fpB,
+              "each hub has its own identity fingerprint" );
+
+      // INCREMENTAL. A second link off the same hub must find the identity
+      // it already holds and ADD to the allow-list rather than replace it
+      // -- so Sec.Node must still be up afterwards.
+      p2pf::Hub scC = net.createHub ( L"Sec.Third", p2pf::P2PF_HUB_SECURE );
+      scC.onPeerUp ( [&](const wchar_t*){ oThirdUp.Set(); } );
+      Check ( net.link ( L"Sec", L"Sec.Third" ) == S_OK &&
+              oThirdUp.Wait ( 10000 ),
+              "a second secure link off the same hub comes up too" );
+      Check ( scA.securityFingerprint ( ) == fpA,
+              "...without rotating the identity it already had" );
+      Check ( scB.isPeerUp ( L"Sec" ),
+              "...and the first secure link is untouched" );
+
+      // BOTH SECURE OR NEITHER. Enforcement is hub-wide in the kernel with
+      // no per-connection override, so a secure hub demands a login a
+      // plain one holds no key to produce. That pair is refused before
+      // anything is armed rather than armed into a link that can never
+      // come up.
+      //
+      // Lk and Lk.Node are section 14's PLAIN pair and are still up, so
+      // the rule is checked in both directions without minting four more
+      // hubs (the kernel allows 16 per process, and this suite is not the
+      // only section that wants some).
+      Check ( net.link ( L"Sec", L"Lk.Node" ) == p2pf::P2PF_E_SECURITY,
+              "a secure hub cannot be linked to a plain one" );
+      Check ( net.link ( L"Lk", L"Sec.Third" ) == p2pf::P2PF_E_SECURITY,
+              "...and it is refused the same way from the other side" );
+      Check ( lkB.isPeerUp ( L"Lk" ),
+              "...with the plain edge that made it plain still up" );
+
+      // LISTEN/CONNECT ON A SECURE HUB read the far end's PUBLISHED key
+      // files, because that end may be in another process and there is no
+      // other way to learn a public point. Sec.Fifth is a hub that has
+      // never existed, so it has published nothing, and the refusal names
+      // the file it wanted rather than arming an unauthenticated peer.
+      Check ( scA.listen ( L"Sec.Fifth", nullptr ) == p2pf::P2PF_E_SECURITY,
+              "Listen to a peer with no published key is refused, not armed" );
+
+      // ...and the same call SUCCEEDS for a peer that HAS published, which
+      // is the whole cross-process story: Sec.Node wrote "Sec.Node.key.pub"
+      // and "Sec.Node.agree.pub" into the security directory when it was
+      // created, and on another machine those two files are what an
+      // operator copies across. Here they are already in place.
+      p2pf::Hub scD = net.createHub ( L"Sec.Node.Leaf", p2pf::P2PF_HUB_SECURE );
+      Check ( SUCCEEDED ( scB.listen ( L"Sec.Node.Leaf", nullptr ) ),
+              "Listen to a peer that HAS published its key is armed" );
+      Check ( ( scB.securityFlags ( ) & p2pf::P2PF_SEC_ARMED ) != 0,
+              "...and the hub is still armed afterwards" );
+
+      // A PATTERN LISTENER is the one arm whose peer cannot be provisioned
+      // -- there is no key filed under "Sec.*" -- so it is admitted on a
+      // different question: is this hub ALREADY authenticating? Sec is, so
+      // it may have one. The kernel never sees the pattern in its auth path;
+      // the allow-list is keyed on the address off the wire and the pattern
+      // only filters the name a peer CLAIMS, so this narrows who may knock
+      // rather than widening who gets in.
+      Check ( SUCCEEDED ( scA.listen ( L"Sec.Deep.*", L"tcp://:7831" ) ),
+              "a secure hub that is already armed may take a wildcard listener" );
+      Check ( ( scA.securityFlags ( ) & p2pf::P2PF_SEC_ARMED ) != 0,
+              "...and it is still enforcing afterwards" );
+
+      // ...but a wildcard may not be a secure hub's FIRST arm. scD holds keys
+      // and trusts nobody -- Sec.Node listened for IT, not the other way round
+      // -- so it has never turned enforcement on, and a hub whose only
+      // listener is a pattern would sit there accepting anyone at all. That is
+      // the one outcome the flag exists to rule out, so it is refused.
+      Check ( ( scD.securityFlags ( ) & p2pf::P2PF_SEC_REQUIRED ) == 0,
+              "a secure hub that has trusted nobody is not enforcing yet" );
+      Check ( scD.listen ( L"Sec.Node.Leaf.*", L"tcp://:7832" )
+                == p2pf::P2PF_E_SECURITY,
+              "...so a wildcard cannot be its first arm: nothing to enforce with" );
+
+      // A PLAIN hub is untouched by every line above -- including the
+      // wildcard rule, which is why section 15 can still arm "Rd.Deep.*".
+      Check ( lkA.securityFlags ( ) == 0 && lkA.securityFingerprint ( ).empty ( ),
+              "a plain hub holds no identity and enforces nothing" );
+      Check ( SUCCEEDED ( lkA.listen ( L"Lk.Any.*", L"tcp://:7833" ) ),
+              "...and takes a wildcard listener with no provisioning at all" );
+
+      // The directory cannot move once a hub holds a key out of it: that
+      // hub's identity would still be the old one and nothing would say so.
+      Check ( net.setSecurityDir ( L"." ) == p2pf::P2PF_E_SECURITY,
+              "the security directory is fixed once anything is provisioned" );
+
+      scA.close(); scB.close(); scC.close(); scD.close();
+    }
+
+    // -----------------------------------------------------------------
     // 15. The read side: what a hub can say about itself
     // -----------------------------------------------------------------
     std::printf ( "\n-- read side --\n" );

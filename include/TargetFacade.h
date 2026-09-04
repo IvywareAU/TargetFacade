@@ -144,8 +144,34 @@ namespace p2pf {
 // before using it, because the delivery thread rule is not the one every other
 // callback in this ABI follows, and it could not be.  The factory accepts
 // 4 through 10.
+//
+// ABI 11 APPENDS ONE METHOD TO IP2PNetwork AND ONE TO IP2PHub, adds no new
+// interface at all, and adds one bit to the flags word CreateHubEx already
+// takes: P2PF_HUB_SECURE -- A SECURE HUB (see "Security" below).  Underneath,
+// TargetCore has carried a signed login, a per-connection session cypher, an
+// allow-list, a revocation list and an arming gate for some time, and none of
+// it was reachable from here: the facade has been spawning every hub with the
+// enforcement switches turned OFF, which is the library's own documented
+// migration for a tree that has not been provisioned and is what this ABI keeps
+// as the DEFAULT for a hub created without the flag.
+//
+// THE FLAG IS ON THE HUB BECAUSE THE SETTING IS ON THE HUB.  Enforcement in
+// TargetCore is hub-wide and there is no per-connection override, so "is this
+// link authenticated" was never a question one link could answer: a hub either
+// demands a signed login from everything that reaches it or from nothing.
+// Saying it once, when the hub is made and before it can have a connection at
+// all, is therefore the only place the answer is not retroactive -- and it is
+// what makes the rest of it invisible.  A secure hub generates its own keys,
+// publishes their halves, and puts each new peer into its allow-list as the
+// link is armed; no client of this facade names a key file, an allow-list or a
+// revocation list, and none of them appears in this header.
+//
+// SetSecurityDir says where that material lives and has a default that works.
+// IP2PHub::GetSecurityInfo reads a posture back.  Both are optional: a client
+// that only passes the flag never calls either, and a client that never passes
+// the flag cannot tell this ABI from ABI 10.  The factory accepts 4 through 11.
 // ---------------------------------------------------------------------------
-const unsigned int ABI_VERSION = 10;
+const unsigned int ABI_VERSION = 11;
 
 // The oldest ABI whose vtable is still a prefix of this one.  Between this and
 // ABI_VERSION inclusive, a client needs no rebuild.
@@ -192,6 +218,8 @@ const HRESULT P2PF_E_NOT_PUMPED     = MAKE_HRESULT(1, FACILITY_ITF, 0x0215); // 
 const HRESULT P2PF_E_PUMP_OWNER     = MAKE_HRESULT(1, FACILITY_ITF, 0x0216); // a caller-pumped hub was touched from the wrong thread
 // --- added with ABI 10 ------------------------------------------------------
 const HRESULT P2PF_E_NO_DIAG        = MAKE_HRESULT(1, FACILITY_ITF, 0x0217); // GetDiagText/GetDiagInfo outside an OnDiag callback
+// --- added with ABI 11 ------------------------------------------------------
+const HRESULT P2PF_E_SECURITY       = MAKE_HRESULT(1, FACILITY_ITF, 0x0218); // a secure hub could not be provisioned, would not arm, or has no key for this peer
 
 // ---------------------------------------------------------------------------
 // IP2PHub::GetCon flags
@@ -413,6 +441,11 @@ const unsigned int MAX_PAYLOAD = 24 * 1024;
 // CreateHubEx flags.
 const unsigned int P2PF_HUB_SPAWN_PUMP    = 0x0000; // the default: what CreateHub does
 const unsigned int P2PF_HUB_CALLER_PUMPED = 0x0001; // this thread owns the pump
+// A SECURE HUB: it holds an identity, it demands a signed login from every peer
+// it links to, and it will not carry a peer it cannot authenticate.  (ABI 11)
+// Orthogonal to the pump flag -- either kind of hub can be secure.  See
+// "Security" further down, and IP2PHub::GetSecurityInfo.
+const unsigned int P2PF_HUB_SECURE        = 0x0002; // authenticated, per hub
 
 // What one Pump call actually did, reported through its `outWhat`.  These are
 // the kernel's own P2PmsgPump_* result codes, repeated so a client never needs
@@ -529,6 +562,37 @@ const unsigned int P2PF_DIAGT_GROUP   = 5; // the kernel's own grouping tag ("P2
 // own rather than parsing this.
 const unsigned int P2PF_DIAGT_CLASS   = 6;
 const unsigned int P2PF_DIAGT_HRESULT = 7; // the HRESULT's text, when one was attached
+
+// ---------------------------------------------------------------------------
+// GetSecurityInfo flags -- what a hub's security posture actually is. (ABI 11)
+//
+// READ BACK FROM THE HUB, never from a copy the facade kept: every bit below is
+// answered by asking the kernel at the moment of the call.  A cached posture is
+// one forgotten line away from reporting a state the hub does not have, which
+// for this particular question is the whole failure mode.
+//
+// The one that matters is P2PF_SEC_ARMED, and it is NOT implied by
+// P2PF_SEC_REQUIRED: a hub can require authentication and be unable to perform
+// it -- no identity, no allow-list, a revocation list that will not load -- and
+// that combination is exactly what refuses every peer that arrives.  Nothing
+// is ever armed on a secure hub until the hub answers ARMED, so seeing it here
+// after a successful Link/Listen/Connect is a confirmation, not a hope.
+//
+// A SECURE HUB WITH NO PEERS YET reads REQUIRED=0 and ARMED=0, and that is the
+// honest answer rather than a gap: enforcement is switched on when the hub
+// gains the first peer it can authenticate, because the kernel refuses to
+// START a hub that requires authentication and trusts nobody (p2pauth's
+// ArmEmptyAllow -- an allow-list that lists nobody refuses everybody, so it is
+// refused at startup instead of at the first login).  CAN_SIGN, CAN_OPEN and
+// REVOCATION are all set from the moment the hub exists.
+// ---------------------------------------------------------------------------
+const unsigned int P2PF_SEC_NONE       = 0x0000; // a hub nothing has secured
+const unsigned int P2PF_SEC_REQUIRED   = 0x0001; // enforcement is ON (auth is demanded)
+const unsigned int P2PF_SEC_CAN_SIGN   = 0x0002; // holds an identity key: can prove itself
+const unsigned int P2PF_SEC_CAN_OPEN   = 0x0004; // holds an agreement key: can be sealed to
+const unsigned int P2PF_SEC_ARMED      = 0x0008; // can enforce what it requires, RIGHT NOW
+const unsigned int P2PF_SEC_SEALED     = 0x0010; // a relayed body must be sealed end-to-end
+const unsigned int P2PF_SEC_REVOCATION = 0x0020; // a revocation list is configured AND loads
 
 // ---------------------------------------------------------------------------
 // IP2PDiagEvents -- implemented by the CLIENT, handed to SetDiagSink. (ABI 10)
@@ -1358,6 +1422,121 @@ struct IP2PHub
     virtual HRESULT GetPumpInfo   ( unsigned int *outFlags
                                   , unsigned int *outThreadId ) const = 0;
 
+    // --- security -------------------------------------------------------- ABI 11
+    //
+    // WHAT A SECURE HUB IS, said here because P2PF_HUB_SECURE is one bit in a
+    // flags word and this is the only method that bit produces.
+    //
+    // A hub created with P2PF_HUB_SECURE demands a SIGNED LOGIN, with a
+    // per-connection session cypher, from every peer it links to -- on
+    // whatever transport is underneath -- and it will not carry a peer it
+    // cannot authenticate.  A hub created without it is exactly the hub every
+    // ABI up to 10 shipped: it signs nothing and verifies nothing.  There is
+    // no third state and no way to change the answer afterwards, because
+    // enforcement in TargetCore is hub-wide with no per-connection override:
+    // a hub that could be secured later would be one whose existing links
+    // silently changed terms, and a hub that could be relaxed later would be
+    // one whose secure links silently opened.
+    //
+    // EVERYTHING BEHIND IT IS ARRANGED FOR YOU, and none of it is in this
+    // header:
+    //
+    //   * an IDENTITY KEY (ECDSA P-256), created on this hub's first run in
+    //     the security directory and FOUND on every run after -- a first-run
+    //     helper that rotated on restart would change a hub's identity behind
+    //     the operator's back.  Its publishable half is written beside it as
+    //     "<stem>.key.pub";
+    //   * an AGREEMENT KEY (ECDH P-256), the separate key others seal TO,
+    //     published as "<stem>.agree.pub".  Deliberately not the same key as
+    //     the identity and deliberately unable to be: different container
+    //     magic and different entropy, so a swapped or renamed file fails
+    //     loudly instead of quietly making a hub sign with the key it agrees
+    //     with;
+    //   * an ALLOW-LIST, which the hub adds to as it is linked.  This is the
+    //     half of provisioning that is not mechanical -- WHO DO YOU TRUST --
+    //     and where the answer comes from depends on the verb:
+    //       Link      both ends are hubs THIS network owns, in THIS process,
+    //                 so the key exchange an operator would do by hand is a
+    //                 memcpy.  Both hubs must be secure; a secure hub and a
+    //                 plain one cannot be linked, because one of them would
+    //                 be demanding a login the other cannot perform.
+    //       Listen /  the far end may be in another process, where the facade
+    //       Connect   has no way to learn its public points.  They are read
+    //                 from the security directory, as the peer's own
+    //                 "<stem>.key.pub" and "<stem>.agree.pub" -- the files a
+    //                 secure hub publishes for exactly this.  Copying those
+    //                 two files from the other machine IS the provisioning
+    //                 step, and if they are not there the call is refused
+    //                 with P2PF_E_SECURITY naming the file it wanted rather
+    //                 than arming something unauthenticated;
+    //       a PATTERN  "Demo.*" names no peer whose key could be looked up, so
+    //                 it is admitted on a different question: IS THIS HUB
+    //                 ALREADY AUTHENTICATING?  The kernel never sees the
+    //                 pattern in its auth path -- the allow-list is keyed on
+    //                 the source address off the wire and the pattern is an
+    //                 accept filter applied to the name the peer CLAIMED -- so
+    //                 a hub that requires authentication and lists A and B may
+    //                 listen on "Demo.*" and will authenticate exactly those
+    //                 two, refusing every stranger the pattern lets through.
+    //                 What it may NOT be is a hub's FIRST arm: a hub whose
+    //                 only listener is a wildcard has an empty allow-list, has
+    //                 therefore never turned enforcement on, and would accept
+    //                 anyone -- so that is P2PF_E_SECURITY, saying to link or
+    //                 to listen for one named peer first;
+    //   * a REVOCATION LIST, shared by every secure hub in the process.  A
+    //     position rather than a feature: the file must exist before a hub
+    //     that requires authentication will arm, an all-comments file is the
+    //     honest "nothing revoked yet", and a configured list that will not
+    //     load fails CLOSED and refuses every peer.
+    //
+    // WHEN ENFORCEMENT GOES ON, which is the one piece of the mechanism worth
+    // knowing.  Not at creation: the kernel refuses to START a hub that
+    // requires authentication and trusts nobody, because an allow-list that
+    // lists nobody refuses everybody, and that refusal is far better at
+    // startup than at 3am on the first connection.  So a secure hub is created
+    // holding its keys with enforcement off, and turns it on as it takes the
+    // first peer it can authenticate -- at which point the kernel's own arming
+    // gate is re-run and the connection is armed only if the hub passes it.
+    // A secure hub with no peers has nothing to enforce and nothing exposed.
+    //
+    // WHAT IT DELIBERATELY DOES NOT TURN ON.  TargetCore also defaults to
+    // requiring an END-TO-END SEAL on a body that will cross an intermediate
+    // hub, and an ORIGIN ATTESTATION on a message arriving down an ancestor
+    // link.  Both are properties of an ORIGIN AND A DESTINATION; this flag
+    // secures a hub and its EDGES.  For routed traffic -- which is the whole
+    // point of Send routing multi-hop and of Link being per edge -- the origin
+    // and the destination are two hubs that are not linked to each other and
+    // so are not in each other's allow-lists, and requiring either would
+    // refuse every routed message and every broadcast on a secure hub.  A
+    // silent break dressed as a protection is worse than the honest scope, so
+    // the honest scope is what this has: EVERY LINK OF THIS HUB IS
+    // AUTHENTICATED AND ENCRYPTED.  The agreement key is provisioned anyway,
+    // so a deployment that knows its origin/destination pairs can list them
+    // and raise either switch itself through GetNative -- provisioning is the
+    // part that cannot be retro-fitted, and a flag is one line.
+
+    // What this hub's security posture IS, asked of the kernel rather than of
+    // a record the facade kept.  A cached posture is one forgotten line away
+    // from reporting a state the hub does not have, which for this particular
+    // question is the whole failure mode.
+    //
+    //   buf/cch    this hub's identity FINGERPRINT -- the human-checkable form
+    //              of its public point, which is what an operator reads down a
+    //              phone line to confirm the key that arrived is the key that
+    //              was sent.  Empty for a hub that holds no identity, which is
+    //              every hub not created with P2PF_HUB_SECURE.  The usual
+    //              buffer protocol (*cch in = capacity in characters, out =
+    //              size required INCLUDING the terminator, NULL buffer = size
+    //              query, short buffer = ERROR_MORE_DATA with nothing
+    //              written).  Both may be NULL if only the flags are wanted.
+    //   outFlags   any OR of P2PF_SEC_*, or 0 for a plain hub.  Optional.
+    //
+    // A FINGERPRINT IS NOT AN IDENTIFIER THIS CODE TRUSTS, and nothing here
+    // treats it as one -- a trust decision is made against the full public
+    // point, in the allow-list.  It is for a human to compare.
+    virtual HRESULT GetSecurityInfo ( wchar_t *buf, unsigned int *cch
+                                    , unsigned int *outFlags ) const = 0;
+
   protected:
     ~IP2PHub ( ) { }            // destroyed only via Close()/network Release()
 };
@@ -1442,6 +1621,15 @@ struct IP2PNetwork
     // for the other (calling Link twice for one pair is an error, not a
     // no-op), and P2PF_S_UNRELATED_LINK -- a SUCCESS code -- if the two
     // addresses are siblings or unrelated (see IP2PHub "Topology").
+    //
+    // SECURE HUBS ARE LINKED THE SAME WAY, and this is the one call in the
+    // ABI that can complete the trust exchange by itself: both ends are hubs
+    // this network owns, in this process, so putting each hub's public points
+    // into the other's allow-list is a memcpy rather than an operator and two
+    // published files.  Both hubs must have been created with P2PF_HUB_SECURE
+    // or neither must -- a secure hub demands a signed login that a plain one
+    // cannot perform, so the mixed pair is P2PF_E_SECURITY with nothing armed
+    // rather than a link that quietly never comes up.  (ABI 11)
     virtual HRESULT Link ( const wchar_t *listenerAddr
                          , const wchar_t *dialerAddr
                          , const wchar_t *endpoint ) = 0;
@@ -1548,10 +1736,11 @@ struct IP2PNetwork
     //
     // CreateHub, plus one word about WHOSE THREAD the hub runs on.  (ABI 9)
     //
-    // `flags` is P2PF_HUB_SPAWN_PUMP (0) or P2PF_HUB_CALLER_PUMPED; everything
-    // else about the call, including every failure it can report, is CreateHub
-    // exactly.  CreateHubEx(addr, events, 0, out) and CreateHub(addr, events,
-    // out) are the same call, which is why CreateHub is not deprecated and not
+    // `flags` is any OR of P2PF_HUB_CALLER_PUMPED and P2PF_HUB_SECURE, or
+    // P2PF_HUB_SPAWN_PUMP (0) for neither; everything else about the call,
+    // including every failure it can report, is CreateHub exactly.
+    // CreateHubEx(addr, events, 0, out) and CreateHub(addr, events, out) are
+    // the same call, which is why CreateHub is not deprecated and not
     // reimplemented -- it forwards here.
     //
     // With P2PF_HUB_CALLER_PUMPED the hub is created ON THIS THREAD and is
@@ -1565,6 +1754,15 @@ struct IP2PNetwork
     // P2PF_E_HUB_SPAWN for the next -- as does a thread that is itself some
     // other hub's pump (a callback, in other words).  A process may hold as
     // many caller-pumped hubs as it has threads to give them.
+    //
+    // With P2PF_HUB_SECURE the hub holds an identity and demands a signed
+    // login from every peer it links to; read IP2PHub::GetSecurityInfo, which
+    // is where the whole of that is written down.  The two flags are
+    // orthogonal -- either kind of hub can be secure -- and the key material
+    // is made here, before the pump exists, so a directory that cannot be
+    // written or a key file that cannot be loaded is P2PF_E_SECURITY with the
+    // file named on the diagnostic stream, and NO HUB IS CREATED.  A client
+    // that wants the keys somewhere particular calls SetSecurityDir first.
     virtual HRESULT CreateHubEx    ( const wchar_t  *address
                                    , IP2PHubEvents  *events
                                    , unsigned int    flags
@@ -1707,6 +1905,34 @@ struct IP2PNetwork
     virtual HRESULT IsDiagWanted   ( unsigned int  mask
                                    , unsigned int *outMatched ) const = 0;
 
+    // --- security -------------------------------------------------------- ABI 11
+    //
+    // Where every secure hub of this process keeps its key material.
+    //
+    // THE ONLY SECURITY CALL ON THE NETWORK, and it is here rather than on a
+    // hub because the directory is the PROCESS'S: the revocation list in it is
+    // shared by every secure hub, since revoking a key is an operator editing
+    // one file and a per-hub file would mean doing that once per hub and
+    // getting it wrong once per hub.
+    //
+    // OPTIONAL.  NULL or empty restores the default, which is a "p2p"
+    // directory beside the loaded module -- resolved from the module's own
+    // path rather than from the working directory, so a copy of the tree
+    // elsewhere just works and a stale key from another build tree is never
+    // picked up silently.  The DLL's path and not the executable's: a COM
+    // server is loaded by whatever host CoCreates it, and keys that followed
+    // the host would be a different identity per host.  The directory is
+    // created if it is not there, ONE level; a deeper path named here must
+    // already exist, because quietly building a tree of directories for a
+    // mistyped path is worse than the refusal.
+    //
+    // Call it BEFORE the first hub created with P2PF_HUB_SECURE.  Afterwards
+    // it answers P2PF_E_SECURITY: that hub holds keys loaded from the old
+    // directory, and a call that appeared to move them but did not would be
+    // worse than a refusal.  P2PF_E_SECURITY too for a path this process
+    // cannot create.
+    virtual HRESULT SetSecurityDir  ( const wchar_t *dir ) = 0;
+
   protected:
     ~IP2PNetwork ( ) { }
 };
@@ -1722,12 +1948,12 @@ struct IP2PNetwork
 //
 // `abiVersion` MUST be p2pf::ABI_VERSION from the header you compiled
 // against; a stale client gets P2PF_E_ABI_MISMATCH instead of a vtable skew.
-// Accepted: ABI_VERSION_MIN (4) through ABI_VERSION (10).  4 is the floor
+// Accepted: ABI_VERSION_MIN (4) through ABI_VERSION (11).  4 is the floor
 // because it removed vtable slots and moved every method after the arming
 // pair, leaving no compatible prefix for anything older; every version since
-// has only APPENDED (5 to IP2PNetwork, 6 and 7 to IP2PHub, 8, 9 and 10 to
-// both), so a v4 through v9 binary runs here unchanged -- it simply cannot see
-// the newer methods.
+// has only APPENDED (5 to IP2PNetwork, 6 and 7 to IP2PHub, 8, 9, 10 and 11 to
+// both), so a v4 through v10 binary runs here unchanged -- it simply cannot
+// see the newer methods.
 // ---------------------------------------------------------------------------
 extern "C" P2PF_API HRESULT __stdcall
 P2PF_CreateNetwork ( unsigned int abiVersion, p2pf::IP2PNetwork **outNetwork );

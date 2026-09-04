@@ -53,6 +53,7 @@ static const HRESULT kNoHub         = MAKE_HRESULT(1, FACILITY_ITF, 0x020A);
 // it; ITypeInfo::Invoke and the CLR marshaller both normalise it to S_OK,
 // which is the whole reason the read side (dispids 9-13) exists.
 static const HRESULT kUnrelatedLink = MAKE_HRESULT(0, FACILITY_ITF, 0x020C);
+static const HRESULT kSecurity      = MAKE_HRESULT(1, FACILITY_ITF, 0x0218);
 // facade ABI 6 -- compared NUMERICALLY here too, so these are appended only
 static const HRESULT kNoPeer        = MAKE_HRESULT(1, FACILITY_ITF, 0x020D);
 static const HRESULT kTimeout       = MAKE_HRESULT(1, FACILITY_ITF, 0x020E);
@@ -650,6 +651,90 @@ int wmain ( )
             Check ( pNet->Link ( bstrLA, bstrGhost, bstrEmpty ) == kNoHub
                   , "Link to an address no live hub answers to is P2PF_E_NO_HUB" );
             ::SysFreeString ( bstrGhost );
+        }
+
+        // --- CreateSecureHub (dispid 9), SecurityInfo (hub dispid 32) --------
+        //
+        // AUTHENTICATED HUBS, and this tier is the one that could not have
+        // them any other way: everything the flag arranges -- an ECDSA
+        // identity, its publishable point, an ECDH agreement key, a
+        // three-column allow-list, a revocation list, an enforcement flag and
+        // the kernel's arming gate -- is file paths, key containers and
+        // 64-byte points, and a script can express none of it.
+        //
+        // WHAT IS ACTUALLY CHECKED IS THE POSTURE, not that the link works. A
+        // secure hub that quietly fell back to a plain one would pass an
+        // IsPeerUp check exactly as this one does, so the assertion that
+        // carries the section is "armed=1" -- a hub can require authentication
+        // and be unable to perform it, and that state refuses every peer.
+        //
+        // Note the verb that did NOT change: Link is still Link, with its three
+        // arguments and its dispid. Security was settled when the two hubs were
+        // created.
+        {
+            BSTR bstrSA = ::SysAllocString ( L"Com.Sec" );
+            BSTR bstrSB = ::SysAllocString ( L"Com.Sec.Peer" );
+            IP2PHubCom *pSA = NULL, *pSB = NULL;
+
+            Check ( SUCCEEDED ( pNet->CreateSecureHub ( bstrSA, &pSA ) ) && pSA != NULL
+                  , "CreateSecureHub(Com.Sec)" );
+            Check ( SUCCEEDED ( pNet->CreateSecureHub ( bstrSB, &pSB ) ) && pSB != NULL
+                  , "CreateSecureHub(Com.Sec.Peer)" );
+
+            if ( pSA != NULL && pSB != NULL )
+            {
+                hr = pNet->Link ( bstrSA, bstrSB, bstrEmpty );
+                Check ( hr == S_OK, "Link(Com.Sec -> Com.Sec.Peer) -> S_OK" );
+
+                VARIANT_BOOL vbUp = VARIANT_FALSE;
+                for ( int i = 0; i < 300; ++i )
+                {
+                    pSA->IsPeerUp ( bstrSB, &vbUp );
+                    if ( vbUp == VARIANT_TRUE ) break;
+                    PumpOnce();
+                    ::Sleep ( 50 );
+                }
+                Check ( vbUp == VARIANT_TRUE
+                      , "the peer came up, so the SIGNED login completed both ways" );
+
+                BSTR bstrInfo = NULL;
+                hr = pSA->get_SecurityInfo ( &bstrInfo );
+                Check ( SUCCEEDED(hr) && bstrInfo != NULL &&
+                        ::wcsstr ( bstrInfo, L"required=1" ) != NULL &&
+                        ::wcsstr ( bstrInfo, L"armed=1"    ) != NULL
+                      , "SecurityInfo says the hub requires auth AND can enforce it" );
+                if ( bstrInfo != NULL )
+                    wprintf ( L"        Com.Sec: %s\n", bstrInfo );
+                ::SysFreeString ( bstrInfo );
+
+                // BOTH SECURE OR NEITHER. Enforcement is hub-wide with no
+                // per-connection override, so a secure hub demands a login a
+                // plain one holds no key to produce; the refusal arrives
+                // before anything is armed.
+                Check ( pNet->Link ( bstrSA, bstrLB, bstrEmpty ) == kSecurity
+                      , "a secure hub cannot be linked to a plain one" );
+                Check ( pNet->Link ( bstrLA, bstrSB, bstrEmpty ) == kSecurity
+                      , "...and it is refused the same way from the other side" );
+
+                // A PLAIN hub answers the same question with zeros rather than
+                // raising: asking whether something is secure should not be an
+                // exception.
+                BSTR bstrPlain = NULL;
+                Check ( SUCCEEDED ( pLA->get_SecurityInfo ( &bstrPlain ) ) &&
+                        bstrPlain != NULL &&
+                        ::wcsstr ( bstrPlain, L"required=0" ) != NULL &&
+                        ::wcsstr ( bstrPlain, L"(none)"     ) != NULL
+                      , "a plain hub reads back as holding no identity" );
+                ::SysFreeString ( bstrPlain );
+
+                pSA->Close();
+                pSB->Close();
+            }
+
+            if ( pSA != NULL ) pSA->Release();
+            if ( pSB != NULL ) pSB->Release();
+            ::SysFreeString ( bstrSA );
+            ::SysFreeString ( bstrSB );
         }
 
         // --- IP2PNetworkCom: the deployment map (dispids 5-7) ----------------

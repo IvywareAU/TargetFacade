@@ -66,20 +66,35 @@ void CP2PNetworkCom::FinalRelease ( )
 
 STDMETHODIMP CP2PNetworkCom::CreateHub ( BSTR address, IP2PHubCom **ppHub )
 {
+    return CreateHubFlagged ( address, 0, ppHub, L"CreateHub" );
+}
+
+//
+//  Both creation verbs, which differ by one flag word and nothing else
+//  NOTES: ONE implementation, for the reason the facade's own CreateHub
+//         forwards to CreateHubEx: the dispatch thread, the sink, the
+//         registration on this network and the teardown on failure are
+//         identical, and duplicating them would be two chances to fix a bug
+//         once.  `wszCall` is carried only so a raised error names the verb
+//         the SCRIPT called rather than the one this file happens to share
+//
+HRESULT CP2PNetworkCom::CreateHubFlagged ( BSTR address, unsigned int uFlags
+                                         , IP2PHubCom **ppHub, LPCWSTR wszCall )
+{
     if ( ppHub == NULL ) return E_POINTER;
     *ppHub = NULL;
-    if ( m_pNet == NULL ) return Fail ( p2pf::P2PF_E_CLOSED, L"CreateHub", address );
+    if ( m_pNet == NULL ) return Fail ( p2pf::P2PF_E_CLOSED, wszCall, address );
     if ( address == NULL || ::SysStringLen ( address ) == 0 )
-        return Fail ( E_INVALIDARG, L"CreateHub", address );
+        return Fail ( E_INVALIDARG, wszCall, address );
 
     ATL::CComObject<CP2PHubCom> *pObj = NULL;
     HRESULT hr = ATL::CComObject<CP2PHubCom>::CreateInstance ( &pObj );
-    if ( FAILED(hr) ) return Fail ( hr, L"CreateHub", address );
+    if ( FAILED(hr) ) return Fail ( hr, wszCall, address );
 
     ATL::CComPtr<IUnknown> spHold ( pObj->GetUnknown() );   // keep it alive through Init
 
-    hr = pObj->Init ( m_pNet, this, address );
-    if ( FAILED(hr) ) return Fail ( hr, L"CreateHub", address );
+    hr = pObj->Init ( m_pNet, this, address, uFlags );
+    if ( FAILED(hr) ) return Fail ( hr, wszCall, address );
 
     // The network owns every hub it created, exactly as the facade does.
     IUnknown *pUnk = pObj->GetUnknown();
@@ -153,6 +168,45 @@ STDMETHODIMP CP2PNetworkCom::Link ( BSTR listenerAddr, BSTR dialerAddr, BSTR end
     // FAILED, never !S_OK: Link answers P2PF_S_UNRELATED_LINK for a sibling
     // pair, and that is a SUCCESS code an early-bound caller is entitled to see.
     return FAILED(hr) ? Fail ( hr, L"Link", listenerAddr, dialerAddr, endpoint ) : hr;
+}
+
+//
+//  A hub that demands a SIGNED LOGIN from every peer it links to (ABI 11)
+//  NOTES: A SEPARATE VERB RATHER THAN AN ARGUMENT ON CreateHub, and both
+//         reasons matter.  Adding one would change a signature every existing
+//         early-bound client is compiled against; and "secure" as a defaulted
+//         argument leaves CreateHub("Demo") looking like a decision when it is
+//         a default.  Two verbs, and the one with the word in it means it
+//       : ONE VERB IS THE WHOLE OF IT AT THIS TIER, which is the point.
+//         Everything behind the flag -- an ECDSA identity, its publishable
+//         point, an ECDH agreement key, an allow-list, a revocation list and
+//         the kernel's arming gate -- is file paths, key containers and
+//         64-byte points, and a script can express none of it.  So it is not
+//         exposed; it is arranged
+//       : Straight through to CreateHub with the flag, because everything else
+//         about creating a hub -- the dispatch thread, the sink, the
+//         registration on this network -- is identical and duplicating it
+//         would be two chances to fix a bug once
+//
+STDMETHODIMP CP2PNetworkCom::CreateSecureHub ( BSTR address, IP2PHubCom **ppHub )
+{
+    return CreateHubFlagged ( address, p2pf::P2PF_HUB_SECURE, ppHub
+                            , L"CreateSecureHub" );
+}
+
+//
+//  Where every secure hub of this process keeps its key material
+//  NOTES: Before the first CreateSecureHub and not after -- that hub already
+//         holds keys loaded from the old directory, and a call that appeared
+//         to move them but did not would be worse than a refusal
+//
+STDMETHODIMP CP2PNetworkCom::SetSecurityDir ( BSTR dir )
+{
+    if ( m_pNet == NULL )
+        return Fail ( p2pf::P2PF_E_CLOSED, L"SetSecurityDir", dir );
+
+    HRESULT hr = m_pNet->SetSecurityDir ( Str(dir) );
+    return FAILED(hr) ? Fail ( hr, L"SetSecurityDir", dir ) : hr;
 }
 
 STDMETHODIMP CP2PNetworkCom::SetEndpoint ( BSTR address, BSTR endpoint )

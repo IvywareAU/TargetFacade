@@ -118,6 +118,13 @@ HRESULT
 bool
   IsSwappedPeerArgument ( const wchar_t *lpszPeer );
 
+// TRUE when `peer` is a P2Padomain PATTERN rather than one address -- it holds
+// one of the kernel's wildcard characters, so the far side's real name is
+// chosen at LOGIN and nothing about it can be known at arm time.  What that
+// costs a SECURE hub is the whole of FacadeHub::AdmitPatternPeer.
+bool
+  IsPattern ( const wchar_t *lpsz );
+
 // How `peer` sits relative to this hub in the dotted address tree.
 enum FacadeRelation
 {

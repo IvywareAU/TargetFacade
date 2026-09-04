@@ -330,6 +330,10 @@ class FacadeNetwork : public p2pf::IP2PNetwork
         virtual HRESULT
           IsDiagWanted   ( unsigned int mask, unsigned int *outMatched ) const;
 
+        // --- ABI 11 ---------------------------------------------------------
+        virtual HRESULT
+          SetSecurityDir  ( const wchar_t *dir );
+
     // Hub bookkeeping
     public:
         // Drop a hub that is closing itself (called from FacadeHub::Close).
@@ -346,6 +350,24 @@ class FacadeNetwork : public p2pf::IP2PNetwork
         // which is every address until someone calls SetEndpoint*.
         HRESULT
           LookupEndpoint ( const wchar_t *address, FacadeEndpoint& rEp ) const;
+
+        // --- ABI 11 : security ----------------------------------------------
+        // The two paths a SECURE hub needs -- the directory its key material
+        // lives in, and the revocation list shared by every secure hub of the
+        // process, which this guarantees exists.  Takes m_oCSection itself, so
+        // it is for callers that do NOT hold it (CreateHubEx, and the arming
+        // verbs on a hub).  P2PF_E_SECURITY with the reason on the diagnostic
+        // stream when either cannot be made.
+        HRESULT
+          SecurityPaths ( CString& rcsDir, CString& rcsRevoke );
+        // One sentence about a security refusal, onto the diagnostic stream as
+        // an error.  P2PF_E_SECURITY is one code covering a family of file
+        // problems, and a code with no sentence sends an operator looking
+        // through a directory by hand -- which is the failure the kernel's own
+        // arming refusal already names the file to prevent.  Public because
+        // FacadeHub raises them too: the provisioning is the hub's.
+        void
+          RaiseSecurityError ( const wchar_t *what );
 
     private:
         FacadeNetwork ( ) { }
@@ -367,6 +389,27 @@ class FacadeNetwork : public p2pf::IP2PNetwork
           DeliverDiag ( const P2Pevent& rEvent );
         void
           CloseAllHubs ( );
+
+        // --- ABI 11 : security ----------------------------------------------
+        // Resolve (and create) the directory the key material lives in, once.
+        // The caller MUST hold m_oCSection.  P2PF_E_SECURITY when the
+        // directory cannot be resolved or made.
+        HRESULT
+          EnsureSecurityDirLocked ( CString& rcsDir );
+        // Hand each hub of one edge the other's public points, and turn
+        // enforcement on for both.  NOTHING IS ARMED BY THIS -- it either
+        // returns S_OK, at which point the caller may arm, or it returns
+        // P2PF_E_SECURITY having changed neither hub.  Called only for a pair
+        // that is already known to be BOTH secure.  The caller MUST hold
+        // m_oCSection.
+        HRESULT
+          SecureEdgeLocked ( FacadeHub *pA, FacadeHub *pB );
+        // Make sure the shared revocation list EXISTS, so naming it is a
+        // POSITION rather than a self-inflicted outage: a configured list that
+        // will not load fails closed and refuses every peer, and an
+        // all-comments file is the honest "nothing revoked yet".
+        static BOOL
+          EnsureRevocationList ( const CString& csPath );
         // The live hub answering to `address`, or NULL.
         // NOTES: The caller MUST hold m_oCSection, and must not let go of it
         //        while it still holds the returned pointer -- FacadeHub::Close
@@ -418,6 +461,17 @@ class FacadeNetwork : public p2pf::IP2PNetwork
         // mask is applied, so a jump in the numbers a client sees is exactly
         // the count of what its own filter dropped.
         volatile LONG                   m_lDiagSeq   = 0;
+
+        // --- ABI 11 ---------------------------------------------------------
+        // Where secure links keep their key material, with a trailing
+        // separator.  Empty until the first secure LinkEx resolves it, or
+        // until SetSecurityDir states it.  Guarded by m_oCSection, like
+        // everything else a Link touches.
+        CString                 m_csSecDir;
+        // A hub has been provisioned out of m_csSecDir, so the directory can
+        // no longer move: those hubs hold keys loaded from it, and a call that
+        // appeared to relocate them but did not would be worse than a refusal.
+        BOOL                    m_bSecUsed = FALSE;
 
         static FacadeNetwork   *s_pInstance;         // the singleton
         static CCriticalSection s_oCSectInstance;    // guards s_pInstance

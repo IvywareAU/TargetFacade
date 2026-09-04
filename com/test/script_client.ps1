@@ -179,6 +179,72 @@ try {
     $b.Close()
     $a.Close()
 
+    # A SECURE HUB -- the piece this tier could not have had any other way.
+    # Everything behind CreateSecureHub is an ECDSA identity, its publishable
+    # point, an ECDH agreement key, a three-column allow-list, a revocation
+    # list and the kernel's arming gate, and a script can express none of it.
+    # So it is not exposed; it is arranged.  One verb, and the hub that comes
+    # back demands a SIGNED LOGIN from every peer it links to.
+    #
+    # Note the verb that did NOT change: Link is still Link, with the same
+    # arguments.  Authentication is a property of a HUB -- enforcement is
+    # hub-wide in the kernel with no per-connection override -- so it is
+    # settled where the hub is made, before it can have a connection at all.
+    $secA = $net.CreateSecureHub("Script.Sec")
+    $secB = $net.CreateSecureHub("Script.Sec.Peer")
+
+    # BEFORE ANY LINK.  The hub holds its keys from the moment it exists, and
+    # requires nothing yet: an allow-list that lists nobody refuses everybody,
+    # so the kernel will not start such a hub at all.  Enforcement goes on with
+    # the first peer it can authenticate.
+    Check ($secA.SecurityInfo -match 'signs=1' -and $secA.SecurityInfo -match 'required=0') `
+          "a fresh secure hub holds its keys and requires nothing yet"
+
+    $net.Link("Script.Sec", "Script.Sec.Peer")
+
+    $deadline = (Get-Date).AddSeconds(15)
+    while (-not $secA.IsPeerUp("Script.Sec.Peer") -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 50
+    }
+    Check ($secA.IsPeerUp("Script.Sec.Peer")) `
+          "the peer came up, so the SIGNED login completed both ways"
+
+    # THE CHECK THAT MATTERS, and it is armed=1 rather than required=1: a hub
+    # can require authentication and be unable to perform it, and that state
+    # refuses every peer rather than authenticating any.  A secure hub that had
+    # quietly fallen back to a plain one would pass the IsPeerUp check above
+    # exactly as this one does.
+    Check ($secA.SecurityInfo -match 'required=1' -and $secA.SecurityInfo -match 'armed=1') `
+          "...and the hub requires auth AND can enforce it"
+    Write-Host "        --- SecurityInfo ---"
+    Write-Host "        $($secA.SecurityInfo)"
+
+    # The fingerprint is what an operator reads down a phone line to confirm
+    # that the key which arrived is the key that was sent.  It is never an
+    # identifier this code trusts -- a trust decision is made against the full
+    # public point, in the allow-list.
+    Check ($secA.SecurityInfo -ne $secB.SecurityInfo) `
+          "each hub has its own identity fingerprint"
+
+    # BOTH SECURE OR NEITHER.  A secure hub demands a login a plain one holds
+    # no key to produce, so the mixed pair is refused before anything is armed
+    # rather than armed into a link that could never come up.  Script.Link was
+    # closed above, so Script.Cfg's pair is not up yet -- use the plain server
+    # this script opened with.
+    Check ((HResultOf { $net.Link("Script.Sec", "Script.Client") }) -eq '0x80040218') `
+          "a secure hub cannot be linked to a plain one (p2pfSecurity)"
+    $why = MessageOf { $net.Link("Script.Sec", "Script.Client") }
+    Check ($why -match 'CreateSecureHub') `
+          "...and the message says which verb makes both ends match"
+
+    # A PLAIN hub answers the same question rather than raising: asking whether
+    # something is secure should not be an exception.
+    Check ($server.SecurityInfo -match 'required=0' -and $server.SecurityInfo -match '\(none\)') `
+          "a plain hub reads back as holding no identity at all"
+
+    $secB.Close()
+    $secA.Close()
+
     # THE DEPLOYMENT MAP -- the piece this tier wanted most.  A script could
     # only ever arm something by spelling the endpoint at the call site, so
     # moving a server meant editing the script.  Now the script says who talks

@@ -110,7 +110,10 @@ class ATL_NO_VTABLE CP2PHubCom
 
     // Called by CP2PNetworkCom right after construction.  Starts the dispatch
     // thread FIRST, then creates the kernel hub, so no event can be missed.
-    HRESULT Init ( p2pf::IP2PNetwork *pNet, CP2PNetworkCom *pOwner, LPCWSTR wszAddress );
+    // `uFlags` is the facade's CreateHubEx flags word -- 0 for CreateHub,
+    // p2pf::P2PF_HUB_SECURE for CreateSecureHub.  (facade ABI 11)
+    HRESULT Init ( p2pf::IP2PNetwork *pNet, CP2PNetworkCom *pOwner, LPCWSTR wszAddress
+                 , unsigned int uFlags = 0 );
 
     // --- IP2PHubCom -------------------------------------------------------
     STDMETHOD(Listen)        ( BSTR toPeer, BSTR endpoint );
@@ -169,6 +172,11 @@ class ATL_NO_VTABLE CP2PHubCom
     STDMETHOD(get_MsgFieldCount) ( LONG *pVal );
     STDMETHOD(MsgFieldName)      ( LONG index, BSTR *pVal );
     STDMETHOD(MsgField)          ( BSTR name, VARIANT *pVal );
+
+    // Security (facade ABI 11) -- dispid 32, IID unchanged.  A READER only:
+    // a hub is made secure when it is CREATED, and there is nothing about it
+    // to set afterwards.
+    STDMETHOD(get_SecurityInfo)  ( BSTR *pVal );
 
     // --- IConnectionPointContainer ----------------------------------------
     STDMETHOD(EnumConnectionPoints) ( IEnumConnectionPoints **ppEnum );

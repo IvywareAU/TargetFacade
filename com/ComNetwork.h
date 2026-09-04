@@ -60,9 +60,22 @@ class ATL_NO_VTABLE CP2PNetworkCom
     // message holds no hub, no kernel object and no thread, so there is
     // nothing here to own -- the client releases it like any other object.
     STDMETHOD(CreateMessage)      ( IP2PMessageCom **ppMessage );
+    // facade ABI 11. Security is a property of a HUB, so the opt-in is a
+    // second creation verb rather than an argument on Link; SetSecurityDir
+    // says where the keys it makes are kept.  Reading a posture back is on
+    // the hub (IP2PHubCom::SecurityInfo).
+    STDMETHOD(CreateSecureHub)    ( BSTR address, IP2PHubCom **ppHub );
+    STDMETHOD(SetSecurityDir)     ( BSTR dir );
 
     // Called by CP2PHubCom::Close: drops the network's reference to that hub.
     void ForgetHub ( CP2PHubCom *pHub );
+
+  private:
+    // CreateHub and CreateSecureHub, which differ by one flag word.  `wszCall`
+    // is carried only so a raised error names the verb the SCRIPT called.
+    HRESULT CreateHubFlagged ( BSTR address, unsigned int uFlags
+                             , IP2PHubCom **ppHub, LPCWSTR wszCall );
+  public:
 
   private:
     p2pf::IP2PNetwork           *m_pNet;

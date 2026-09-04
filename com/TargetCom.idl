@@ -317,6 +317,35 @@ interface IP2PHubCom : IDispatch
     [id(31), helpstring("One field of the current message, as a byte array. "
                         "Valid only inside an OnMessage handler.")]
     HRESULT MsgField ( [in] BSTR name, [out, retval] VARIANT *pVal );
+
+    // APPENDED, dispid 32, same additive rule as everything above.
+    // (facade ABI 11)
+    //
+    // AUTHENTICATION IS A PROPERTY OF A HUB, which is why the only security
+    // member on this interface is a READER.  A hub is made secure when it is
+    // created -- P2PNetwork.CreateSecureHub -- and everything behind that is
+    // key containers, file paths and 64-byte points, none of which a script
+    // has any way to express.  So the whole of it is one verb at creation and
+    // one sentence here.
+    //
+    // PROSE AND NOT A BIT FIELD: a script asking whether security is on is
+    // reading the answer, not masking it, and a returned number would need
+    // the P2PF_SEC_* constants published to a tier that has no header to
+    // publish them in.  Empty of everything for a plain hub.
+    //
+    // The fingerprint in it is for a HUMAN to compare -- it is what an
+    // operator reads down a phone line to confirm that the key which arrived
+    // is the key that was sent -- and it is never an identifier this code
+    // trusts.  Trust decisions are made against the full public point.
+    //
+    // Read `armed` and not merely `required`: a hub can require
+    // authentication and be unable to perform it, and that state refuses every
+    // peer.  A secure hub with no links yet reads required=0 armed=0 and holds
+    // its keys -- it has nothing to enforce against and nothing exposed.
+    [propget, id(32), helpstring("One line about this hub's security: its identity "
+                                 "fingerprint and what it requires, signs, opens "
+                                 "and has armed.")]
+    HRESULT SecurityInfo ( [out, retval] BSTR *pVal );
 };
 
 // ---------------------------------------------------------------------------
@@ -454,6 +483,53 @@ interface IP2PNetworkCom : IDispatch
     // hub closes, which does not arise. (facade ABI 8)
     [id(8), helpstring("Make an empty message to fill in and hand to SendMsg.")]
     HRESULT CreateMessage ( [out, retval] IP2PMessageCom **ppMessage );
+
+    // APPENDED, dispids 9-10, same additive rule as everything above: CreateHub
+    // keeps dispid 1 AND its signature, Link keeps dispid 4 and its three
+    // arguments, so no existing script and no existing early-bound client
+    // changes.  (facade ABI 11)
+    //
+    // AUTHENTICATED HUBS.  Underneath this server, TargetCore has carried a
+    // signed login, a per-connection session cypher, an allow-list, a
+    // revocation list and an arming gate for some time, and none of it was
+    // reachable from a script -- the facade spawns every hub with the
+    // enforcement switches OFF, which is the library's own documented
+    // migration for a tree nobody has provisioned.  CreateSecureHub is the
+    // opt-in, and for THIS tier it is the one that matters most: everything
+    // behind it is file paths, key containers and byte arrays, and a script
+    // has no way to express any of it.
+    //
+    //     Set a = net.CreateSecureHub("Demo")
+    //     Set b = net.CreateSecureHub("Demo.Client")
+    //     net.Link "Demo", "Demo.Client"      ' keys, allow-lists, enforcement
+    //
+    // A SEPARATE VERB RATHER THAN AN ARGUMENT ON CreateHub, because adding one
+    // would change a signature every existing early-bound client is compiled
+    // against -- and because "secure" as a defaulted argument leaves
+    // CreateHub("Demo") looking like a decision when it is a default.  Two
+    // verbs, and the one with the word in it is the one that means it.
+    //
+    // SECURITY IS A PROPERTY OF A HUB, not of a link: enforcement is hub-wide
+    // in the kernel and there is no per-connection override.  So it is settled
+    // when the hub is made, before it can have a connection at all, and it
+    // cannot change afterwards -- a hub that could be secured later is one
+    // whose existing links silently changed terms.  Link therefore needs both
+    // ends made the same way and raises p2pfSecurity for a mixed pair; Listen
+    // and Connect on a secure hub read the far end's published key files out
+    // of the security directory, and raise the same error naming the file if
+    // they are not there.
+    [id(9), helpstring("Create and start a hub that demands a SIGNED LOGIN from every "
+                       "peer it links to. Keys are generated and published for you.")]
+    HRESULT CreateSecureHub ( [in] BSTR address, [out, retval] IP2PHubCom **ppHub );
+
+    // Where every secure hub of this process keeps its key material.  Empty
+    // restores the default: a "p2p" directory beside TargetFacade.dll.  Before
+    // the first secure hub; afterwards it raises, because that hub already
+    // holds keys loaded from the old one.  Intermediate directories are not
+    // created.
+    [id(10), helpstring("Where secure hubs keep their keys. Empty = a 'p2p' folder "
+                        "beside the facade DLL. Call it before CreateSecureHub.")]
+    HRESULT SetSecurityDir ( [in, defaultvalue("")] BSTR dir );
 };
 
 [
@@ -496,7 +572,10 @@ library TargetComLib
                                                                     p2pfNoMessage = 0x80040212,
         // --- facade ABI 8 ---
         [helpstring("This message carries no field of that name")]   p2pfNoField    = 0x80040213,
-        [helpstring("Too many fields, or a name or value too large")] p2pfFieldLimit = 0x80040214
+        [helpstring("Too many fields, or a name or value too large")] p2pfFieldLimit = 0x80040214,
+        // --- facade ABI 11 ---
+        [helpstring("A secure hub could not be provisioned, would not arm, or has no key for this peer")]
+                                                                    p2pfSecurity   = 0x80040218
     } P2PFError;
 
     // Where a message sits in the receiving pump's queue when more than one is

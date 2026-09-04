@@ -492,7 +492,8 @@ END_P2PeerMsg_MAP()
 
 FacadeHub::FacadeHub ( P2PaddrSTR strAddress
                      , p2pf::IP2PHubEvents *pEvents
-                     , FacadeNetwork *pOwner )
+                     , FacadeNetwork *pOwner
+                     , bool bSecure )
         : P2PeerHub   ( strAddress )
         , m_csAddress ( strAddress )
         , m_pEvents   ( pEvents )
@@ -508,7 +509,10 @@ FacadeHub::FacadeHub ( P2PaddrSTR strAddress
         , m_lCurMsgThread( 0 )
         , m_bCallerPumped( false )
         , m_bPumpDone    ( 0 )
+        , m_bSecure      ( bSecure )
+        , m_bProvisioned ( false )
 {
+    ::memset ( &m_oSecKeys, 0, sizeof(m_oSecKeys) );
 }
 
 FacadeHub::~FacadeHub ( )
@@ -516,9 +520,70 @@ FacadeHub::~FacadeHub ( )
     CloseInternal();
 }
 
+//
+//  The posture a hub is SPAWNED with
+//  NOTES: BEFORE the pump exists, because this is the one point at which the
+//         kernel reads it as a GATE rather than as a policy: SpawnHub and
+//         P2PeerHub::CreateHub both call AuthArmOrRefuse before they start
+//         anything, and a hub that requires authentication and holds no
+//         identity does not start at all
+//       : TargetCore requires authentication by default and requires sealing
+//         by default.  A facade hub is created from an address and a sink and
+//         nothing else -- there is no argument on CreateHub through which a
+//         key, an allow-list or a revocation list could arrive -- so every hub
+//         this facade has ever created has been an unprovisioned one, and the
+//         two lines below are the library's own documented migration for
+//         exactly that.  They are not a relaxation introduced here; they are
+//         the posture every ABI up to 10 shipped, written down
+//       : THREE SWITCHES AND NOT ONE, because three of the kernel's defaults
+//         assume a provisioned tree and each of them breaks a different thing
+//         on a tree that is not:
+//
+//           RequireAuth       the arming gate. A hub with no identity does not
+//                             start at all.
+//           RequireSeal       the outbound gate. A body that will cross an
+//                             INTERMEDIATE hub must be sealed to its
+//                             destination or it is not sent. It also carries
+//                             RequireSealBroadcast, which refuses a broadcast
+//                             on a sealing hub rather than sending it in
+//                             clear. Off here makes the whole path inert
+//                             (P2PeerCon::SealAppMsgOutbound returns at its
+//                             first test), so the broadcast switch needs no
+//                             line of its own.
+//           RequireRelayAuth  the INBOUND gate, and the one that is easiest to
+//                             miss because it is deliberately not part of the
+//                             arming gate: a message arriving down an ancestor
+//                             link with no origin attestation is refused, and
+//                             an unprovisioned origin cannot produce one. What
+//                             that costs is multi-hop routing -- A sending to
+//                             A.B.C through A.B -- which is a facade feature
+//                             (Send routes; Link is per edge for exactly this
+//                             reason) and would otherwise fail with the
+//                             message dropped at the last hop.
+//
+//       : A SECURE HUB IS SPAWNED THE SAME WAY, and that is not an oversight.
+//         RequireAuth cannot go on here: the kernel refuses to arm a hub that
+//         requires authentication and lists nobody (p2pauth::ArmEmptyAllow --
+//         an allow-list that lists nobody refuses everybody, so it is refused
+//         at startup rather than at the first login), and a hub that has not
+//         been linked to anything yet lists nobody by definition. It goes on
+//         in TrustAndEnforce, with the first peer, which is also the first
+//         moment the hub has anything to enforce against and the first moment
+//         it can be exposed. The other two stay off on a secure hub too --
+//         see TrustAndEnforce, which is where that argument is
+//
+void
+FacadeHub::ApplyDefaultPosture ( )
+{
+    RequireAuth      ( false );
+    RequireSeal      ( false );
+    RequireRelayAuth ( false );
+}
+
 BOOL
 FacadeHub::Start ( )
 {
+    ApplyDefaultPosture();
     m_hThread = SpawnHub();
     return m_hThread != 0;
 }
@@ -548,6 +613,7 @@ FacadeHub::Start ( )
 BOOL
 FacadeHub::StartCallerPumped ( )
 {
+    ApplyDefaultPosture();
     try
     {
       if ( !P2PeerHub::CreateHub ( (LPCTSTR)m_csAddress, 1 ) )
@@ -1292,6 +1358,33 @@ FacadeHub::ArmResolved ( const wchar_t *peer, const FacadeEndpoint& rEp
     return p2pf::P2PF_S_UNRELATED_LINK;
 }
 
+//
+//  Listen/Connect, sharing everything but which end they arm
+//  NOTES: ON A SECURE HUB THE PEER IS TRUSTED FIRST, and where its keys come
+//         from is the one thing that separates these two verbs from Link.
+//         Link holds BOTH hubs, so it hands each one the other's points
+//         directly; Listen and Connect can name a hub in another process, on
+//         another machine, and there is no way for this process to learn a
+//         public point except to be given it.  So they read the two files that
+//         peer published for itself -- "<peerstem>.key.pub" and
+//         "<peerstem>.agree.pub", out of the same directory this hub published
+//         its own into -- and copying those two files across IS the
+//         provisioning step.  If they are not there, the call is REFUSED with
+//         the file named, rather than armed without authentication: a secure
+//         hub that quietly took a peer it cannot verify is the one outcome
+//         this whole flag exists to rule out
+//       : BEFORE THE ARM AND NOT AFTER, which is the same ordering Link uses
+//         and for the same reason.  Between "the connection exists" and "the
+//         hub enforces" there must be no window at all -- and there is none,
+//         because enforcement goes on inside TrustAndEnforce and this only
+//         reaches ArmResolved once that has returned S_OK
+//       : NOTHING IS LEFT BEHIND BY A FAILURE.  A refusal here has not armed a
+//         connection, and TrustAndEnforce has already put back the allow-list
+//         and (for a hub that had no peer yet) the enforcement flag
+//       : A PLAIN HUB IS UNTOUCHED BY ALL OF IT.  Every branch below is behind
+//         m_bSecure, which is false for every hub created the way every ABI up
+//         to 10 created them
+//
 HRESULT
 FacadeHub::ArmUnified ( const wchar_t *peer, const wchar_t *endpoint
                       , bool bListen )
@@ -1308,7 +1401,130 @@ FacadeHub::ArmUnified ( const wchar_t *peer, const wchar_t *endpoint
     if ( FAILED(hr) )
       return hr;
 
+    if ( m_bSecure )
+    {
+      // A PATTERN is the one peer that cannot be provisioned -- there is no
+      // key filed under "Demo.*" -- so it is admitted on a different question
+      // rather than refused. See AdmitPatternPeer.
+      hr = IsPattern ( peer ) ? AdmitPatternPeer   ( peer )
+                              : TrustPublishedPeer ( peer );
+      if ( FAILED(hr) )
+        return hr;                              // nothing armed, nothing changed
+    }
+
     return ArmResolved ( peer, oEp, bListen );
+}
+
+//
+//  Admit a PATTERN peer on a secure hub, if the hub can already enforce
+//  NOTES: THE ONE ARMING SHAPE WHOSE PEER CANNOT BE PROVISIONED, and the
+//         reason is in the name: "Demo.*" is not an address, it is a filter,
+//         and there is no key to look up for it.  The obvious conclusion --
+//         that a secure hub therefore cannot have one -- is WRONG, and the
+//         mistake is worth writing down because it is two true statements
+//         welded into a false one.  An allow-list entry is not a pattern:
+//         true, the kernel compares identities with an exact compare
+//         (P2PAuthLogin.cpp:1285), so "Demo.*" in that column admits nobody.
+//         A wildcard listener cannot be authenticated: FALSE, and nothing in
+//         the kernel says it
+//       : WHAT THE KERNEL ACTUALLY DOES is two independent checks on the same
+//         claimed name, and the armed pattern is not an input to either.  The
+//         allow-list lookup is keyed on the SOURCE ADDRESS OFF THE WIRE --
+//         P2PeerCon.cpp:3615-3627 takes it from the login message and hands it
+//         to AuthPolicy::VerifyLogin, which asks PeerKeyCount(pSrc) before it
+//         will look at a signature at all.  The pattern is applied
+//         afterwards, in OnLogin (P2PeerCon.cpp:4007-4016), as an ACCEPT
+//         FILTER on the name the peer claimed.  Auth policy is the HUB's, so
+//         an accepted clone inherits it -- AcceptSpawn copies the target
+//         pointer (P2PeerCon.cpp:401) and the gate re-reads
+//         pHub->IsAuthRequired() per connection.  So a hub that requires
+//         authentication and lists A and B may listen on "Demo.*": the
+//         pattern narrows who may CLAIM to log in, the allow-list decides
+//         whose signature is ACCEPTED, and a stranger who satisfies the
+//         pattern still dies at AuthErrUnknownPeer
+//       : SO THE GATE IS NOT "CAN I PROVISION THIS PEER" BUT "AM I ALREADY
+//         ENFORCING".  A hub whose only arm is a wildcard has an empty
+//         allow-list, has therefore never turned RequireAuth on, and would sit
+//         there accepting anyone at all -- a hub the client asked to be secure
+//         quietly behaving as a plain one, which is the single outcome
+//         P2PF_HUB_SECURE exists to rule out.  A hub that has ALREADY armed a
+//         named peer is past that: enforcement is on, the allow-list is
+//         non-empty, and the wildcard adds a filter rather than a hole
+//       : AuthArm() IS THE QUESTION, ASKED OF THE KERNEL.  Not "is m_mapTrusted
+//         non-empty", which is this object's belief about the same thing and
+//         can be wrong in the direction that matters: a revocation list that
+//         has since been deleted leaves a hub that requires authentication and
+//         can no longer perform it, and that hub must not be handed a wildcard
+//         either.  ArmNotRequired is not a pass -- it means enforcement is off
+//
+HRESULT
+FacadeHub::AdmitPatternPeer ( const wchar_t *peer )
+{
+    const p2pauth::ArmResult eArm = AuthArm ( );
+    if ( eArm == p2pauth::ArmOk )
+      return S_OK;
+
+    CString csWhy;
+    csWhy.Format ( L"TargetFacade: hub '%s' is secure and cannot arm the pattern "
+                   L"listener '%s' yet: a pattern names no peer whose key could be "
+                   L"looked up, so this hub must ALREADY be authenticating (%hs). "
+                   L"Link it, or Listen for one named peer, first -- the pattern "
+                   L"then filters who may claim to log in while the allow-list "
+                   L"decides whose signature is accepted. Nothing was armed."
+                 , (LPCWSTR)m_csAddress, peer, p2pauth::AuthArmText ( eArm ) );
+    RaiseSecurityError ( csWhy );
+    return p2pf::P2PF_E_SECURITY;
+}
+//
+//  Trust one peer off the files it published, and enforce
+//  NOTES: The whole of the cross-process provisioning story, in one place,
+//         because Listen and Connect are not the only callers it will ever
+//         have and the sentence it puts on the diagnostic stream should not be
+//         written twice
+//       : THE DIRECTORY IS THE ONE THIS HUB WAS PROVISIONED OUT OF.  Asking
+//         the network again would be asking a question that has already been
+//         answered -- and could be answered differently, if SetSecurityDir had
+//         been called in between, which would have this hub reading a peer key
+//         out of one directory and its own identity out of another
+//
+HRESULT
+FacadeHub::TrustPublishedPeer ( const wchar_t *peer )
+{
+    CString csDir;
+    {
+      CSingleLock oLock ( &m_oCSectPeers, TRUE );
+      csDir = m_csSecDir;
+    }
+    if ( csDir.IsEmpty ( ) )
+    {
+      CString csWhy;
+      csWhy.Format ( L"TargetFacade: hub '%s' was created secure but holds no key "
+                     L"material, so it cannot authenticate '%s'. Nothing was armed."
+                   , (LPCWSTR)m_csAddress, peer );
+      RaiseSecurityError ( csWhy );
+      return p2pf::P2PF_E_SECURITY;
+    }
+
+    SecKeys oKeys;
+    CString csWhat;
+    if ( LoadPeerKeys ( peer, csDir, oKeys, csWhat ) != p2pcng::IdOk )
+    {
+      CString csWhy;
+      csWhy.Format ( L"TargetFacade: hub '%s' has no published key for peer '%s': "
+                     L"%s Nothing was armed."
+                   , (LPCWSTR)m_csAddress, peer, (LPCWSTR)csWhat );
+      RaiseSecurityError ( csWhy );
+      return p2pf::P2PF_E_SECURITY;
+    }
+
+    HRESULT hr = TrustAndEnforce ( peer, oKeys, csDir, csWhat );
+    if ( FAILED(hr) )
+    {
+      CString csWhy;
+      csWhy.Format ( L"TargetFacade: %s Nothing was armed.", (LPCWSTR)csWhat );
+      RaiseSecurityError ( csWhy );
+    }
+    return hr;
 }
 
 HRESULT
@@ -1338,7 +1554,641 @@ FacadeHub::ArmedListener ( const wchar_t *peer ) const
     return CString ( it->second.strEndpoint.c_str() );
 }
 
+///////////////////////////////////////////////////////////////////////
+//  ABI 11 -- security
 //
+//  EVERY SWITCH BEHIND THIS IS THE KERNEL'S.  Nothing here implements
+//  authentication; it arranges the four things P2PeerHub already refuses to
+//  arm without -- an identity, an allow-list, a revocation position and the
+//  enforcement flags -- and then asks the kernel the same question SpawnHub
+//  asks itself.  What the facade adds is that BOTH hubs are in this process,
+//  so the key exchange an operator would perform by hand is a memcpy, and the
+//  arming gate can be re-run at the moment of the call rather than only at
+//  the moment of the spawn.
+
+namespace {
+
+//
+//  Wide to UTF-8, for the identity store's narrow paths and identities
+//  NOTES: UTF-8 and not the ANSI code page.  The allow-list keys a peer by
+//         the UTF-8 of its wide address (AuthPolicy::PeerKeyAt narrows with
+//         its own Utf8FromWide), and the comparison is EXACT -- no case
+//         folding, no normalisation, because a trust decision must not depend
+//         on locale rules.  Narrowing the same string a different way here
+//         would write a line that never matches
+//
+bool
+Utf8Of ( const wchar_t *lpsz, std::string& rOut )
+{
+    rOut.clear();
+    if ( !lpsz )
+      return false;
+
+    const int cb = ::WideCharToMultiByte ( CP_UTF8, 0, lpsz, -1, 0, 0, 0, 0 );
+    if ( cb <= 0 )
+      return false;
+
+    rOut.resize ( (size_t)cb );          // includes the terminator
+    if ( ::WideCharToMultiByte ( CP_UTF8, 0, lpsz, -1, &rOut[0], cb, 0, 0 ) <= 0 )
+      { rOut.clear(); return false; }
+    rOut.resize ( (size_t)cb - 1 );      // and now it does not
+    return true;
+}
+
+// Every stem the address maps to has to fit a file name with room for the
+// longest suffix this writes (".key.pub", ".allow.new"), so the address is
+// capped well inside MAX_PATH rather than at it.
+const int kStemMax = 96;
+
+} // namespace
+
+//
+//  The file stem an address's key material is filed under
+//  NOTES: A P2Paddr is a dotted name and is normally a legal file name
+//         already, so the common case reads "Demo.Server.key" and an operator
+//         can find it.  An address that is NOT one is substituted character
+//         by character -- and the moment anything is substituted or cut, a
+//         hash of the EXACT address is appended
+//       : WHICH IS NOT DECORATION.  Two different addresses that sanitise
+//         alike would otherwise share one stem, and a shared stem is two hubs
+//         loading one identity file: two hubs signing as the same peer, each
+//         overwriting the other's allow-list.  The hash makes the map
+//         injective in every case that matters and is stable across runs, so
+//         a hub finds the key it made last time
+//       : STATIC, AND THAT IS LOAD-BEARING.  It is asked about this hub's own
+//         address AND about a PEER's -- Listen/Connect on a secure hub read
+//         "<peerstem>.key.pub" out of the same directory -- and the two have
+//         to agree character for character, or the file an operator copied
+//         from the other machine is not the file this one goes looking for
+//
+CString
+FacadeHub::SecurityStemOf ( const CString& csAddress )
+{
+    CString csOut;
+    bool    bMangled = ( csAddress.GetLength() > kStemMax );
+
+    const int nTake = ( csAddress.GetLength() < kStemMax )
+                   ?   csAddress.GetLength() : kStemMax;
+    for ( int i = 0; i < nTake; ++i )
+    {
+      const wchar_t ch = csAddress[i];
+      const bool bPlain = ( ch >= L'a' && ch <= L'z' )
+                       || ( ch >= L'A' && ch <= L'Z' )
+                       || ( ch >= L'0' && ch <= L'9' )
+                       ||   ch == L'.' || ch == L'-' || ch == L'_';
+      if ( bPlain ) csOut += ch;
+      else        { csOut += L'_'; bMangled = true; }
+    }
+
+    if ( csOut.IsEmpty() )
+      { csOut = L"hub"; bMangled = true; }
+
+    if ( bMangled )
+    {
+      unsigned int uHash = 2166136261u;                 // FNV-1a, over the exact address
+      for ( int i = 0; i < csAddress.GetLength(); ++i )
+      {
+        uHash ^= (unsigned int)csAddress[i];
+        uHash *= 16777619u;
+      }
+      CString csTail;
+      csTail.Format ( L"-%08x", uHash );
+      csOut += csTail;
+    }
+    return csOut;
+}
+
+//
+//  One sentence about a security refusal, onto the diagnostic stream
+//  NOTES: Through the OWNER, because the diagnostic slot is the PROCESS'S and
+//         the network is what holds it.  A hub with no owner -- which cannot
+//         arise through the public factory -- says nothing rather than
+//         reaching for a singleton to say it with
+//
+void
+FacadeHub::RaiseSecurityError ( const wchar_t *what )
+{
+    if ( m_pOwner && what && *what )
+      m_pOwner->RaiseSecurityError ( what );
+}
+
+//
+//  Give this hub an identity, an agreement key and a revocation position
+//  NOTES: CALLED BEFORE THE PUMP EXISTS, from CreateHubEx, so a hub that
+//         cannot be provisioned is never created rather than created and
+//         quietly insecure
+//       : IT DOES NOT TURN ENFORCEMENT ON, and that is the one thing about
+//         this function worth knowing.  The kernel refuses to arm a hub that
+//         requires authentication and lists nobody -- an allow-list that lists
+//         nobody refuses everybody -- so a hub that switched RequireAuth on
+//         here would simply not have started.  TrustAndEnforce does it, with
+//         the first peer, which is also the first moment there is anything to
+//         enforce against.  See ApplyDefaultPosture
+//       : IDEMPOTENT, and the asymmetry is the library's rather than a choice
+//         made here.  ProvisionAuth run twice FINDS the key instead of
+//         replacing it -- a first-run helper that rotated on restart would
+//         change every hub's identity behind the operator's back -- so a hub
+//         that has already been through here answers from what it holds and
+//         touches no file at all
+//       : The agreement key is a SEPARATE key and deliberately cannot be the
+//         identity: different container magic, different entropy.  Without it
+//         the hub still arms (there is no ArmNoAgreement, because a relay
+//         legitimately holds no keys) but it can neither be sealed to nor open
+//         a body sealed to it
+//       : BOTH PUBLISHABLE HALVES ARE WRITTEN, and the second one is the whole
+//         reason a secure hub can be reached from ANOTHER PROCESS at all.
+//         ProvisionAuth writes "<stem>.key.pub" itself; the agreement point
+//         has no such helper, so it is saved here as "<stem>.agree.pub".
+//         Those two files are what an operator copies to the far machine, and
+//         they are exactly what LoadPeerKeys reads back at the other end
+//       : The identity's public half is read back from the FILE rather than
+//         kept from the generation, so what goes into a peer's allow-list is
+//         the file's content -- which is what an operator would have copied
+//       : The revocation list is named LAST because it is the only step whose
+//         file this hub does not own: it is shared by every secure hub in the
+//         process, and the caller is what guarantees it exists.  A configured
+//         list that will not load fails CLOSED
+//
+p2pcng::IdResult
+FacadeHub::ProvisionSelf ( const CString& csDir, const CString& csRevoke
+                         , CString& rcsWhat )
+{
+    rcsWhat.Empty();
+
+    {
+      CSingleLock oLock ( &m_oCSectPeers, TRUE );
+      if ( m_bProvisioned )
+        return p2pcng::IdOk;
+    }
+
+    const CString csStem = SecurityStem();
+    std::string strKey, strAgree, strPub, strAgreePub, strRevoke;
+    if ( !Utf8Of ( csDir + csStem + L".key",       strKey      ) ||
+         !Utf8Of ( csDir + csStem + L".agree",     strAgree    ) ||
+         !Utf8Of ( csDir + csStem + L".key.pub",   strPub      ) ||
+         !Utf8Of ( csDir + csStem + L".agree.pub", strAgreePub ) ||
+         !Utf8Of ( (LPCWSTR)csRevoke,              strRevoke   )    )
+    {
+      rcsWhat = L"a key file path could not be encoded";
+      return p2pcng::IdErrArgs;
+    }
+
+    SecKeys oKeys;
+    ::memset ( &oKeys, 0, sizeof(oKeys) );
+    bool bCreated = false;
+
+    p2pcng::IdResult e = ProvisionAuth ( strKey.c_str(), oKeys.szFingerprint
+                                       , sizeof(oKeys.szFingerprint), &bCreated );
+    if ( e != p2pcng::IdOk )
+    {
+      rcsWhat.Format ( L"ProvisionAuth(%s%s.key) -> %hs"
+                     , (LPCWSTR)csDir, (LPCWSTR)csStem, p2pcng::IdResultText(e) );
+      return e;
+    }
+
+    e = SetAgreementKey ( strAgree.c_str(), true );
+    if ( e != p2pcng::IdOk )
+    {
+      rcsWhat.Format ( L"SetAgreementKey(%s%s.agree) -> %hs"
+                     , (LPCWSTR)csDir, (LPCWSTR)csStem, p2pcng::IdResultText(e) );
+      return e;
+    }
+
+    p2pcng::EcdsaP256 oPub;
+    e = p2pcng::LoadPublicKey ( strPub.c_str(), oPub );
+    if ( e != p2pcng::IdOk )
+    {
+      rcsWhat.Format ( L"LoadPublicKey(%s%s.key.pub) -> %hs"
+                     , (LPCWSTR)csDir, (LPCWSTR)csStem, p2pcng::IdResultText(e) );
+      return e;
+    }
+    if ( !oPub.ExportPublic ( oKeys.aId ) )
+    {
+      rcsWhat.Format ( L"the public point in %s%s.key.pub could not be exported"
+                     , (LPCWSTR)csDir, (LPCWSTR)csStem );
+      return p2pcng::IdErrFormat;
+    }
+
+    // Straight off the hub -- there is no provisioning helper for the
+    // agreement point -- and then PUBLISHED, which is the half a peer in
+    // another process has no other way to obtain.
+    oKeys.bAgree = GetAgreementPublic ( oKeys.aAgree );
+    if ( oKeys.bAgree )
+    {
+      p2pcng::EcdhP256 oAgreePub;
+      if ( oAgreePub.ImportPublic ( oKeys.aAgree ) )
+      {
+        e = p2pcng::SaveAgreementPublicKey ( strAgreePub.c_str(), oAgreePub );
+        if ( e != p2pcng::IdOk )
+        {
+          rcsWhat.Format ( L"SaveAgreementPublicKey(%s%s.agree.pub) -> %hs"
+                         , (LPCWSTR)csDir, (LPCWSTR)csStem, p2pcng::IdResultText(e) );
+          return e;
+        }
+      }
+    }
+
+    e = SetRevocationList ( strRevoke.c_str() );
+    if ( e != p2pcng::IdOk )
+    {
+      rcsWhat.Format ( L"SetRevocationList(%s) -> %hs"
+                     , (LPCWSTR)csRevoke, p2pcng::IdResultText(e) );
+      return e;
+    }
+
+    {
+      CSingleLock oLock ( &m_oCSectPeers, TRUE );
+      m_oSecKeys     = oKeys;
+      m_csSecDir     = csDir;
+      m_bProvisioned = true;
+    }
+    return p2pcng::IdOk;
+}
+
+//
+//  A PEER's published halves, off the two files that peer wrote for itself
+//  NOTES: THE CROSS-PROCESS PATH, and the only one there can be.  Both ends of
+//         a Link are hubs one network owns, so there the exchange is a memcpy
+//         and this is not used; Listen and Connect can point at another
+//         machine, where the facade has no way to learn a public point except
+//         to be handed it.  Copying "<stem>.key.pub" and "<stem>.agree.pub"
+//         from the far machine into this directory IS the provisioning step,
+//         and it is the one part of provisioning a facade cannot do for an
+//         operator -- WHO DO YOU TRUST has no mechanical answer
+//       : THE AGREEMENT FILE IS OPTIONAL AND THE IDENTITY FILE IS NOT.  A
+//         two-column allow-list entry logs in perfectly well; what it cannot
+//         be is a sealing DESTINATION, and asking to seal to it is refused
+//         rather than downgraded.  A missing identity file, by contrast, is
+//         "I have no idea who that is", and the caller turns it into a refusal
+//         rather than into a plain link
+//
+p2pcng::IdResult
+FacadeHub::LoadPeerKeys ( const wchar_t *peer, const CString& csDir
+                        , SecKeys& rKeys, CString& rcsWhat )
+{
+    ::memset ( &rKeys, 0, sizeof(rKeys) );
+    rcsWhat.Empty();
+    if ( !peer || !*peer )
+      return p2pcng::IdErrArgs;
+
+    const CString csStem  = SecurityStemOf ( CString ( peer ) );
+    const CString csPub   = csDir + csStem + L".key.pub";
+    const CString csAgree = csDir + csStem + L".agree.pub";
+
+    std::string strPub, strAgree;
+    if ( !Utf8Of ( (LPCWSTR)csPub, strPub ) || !Utf8Of ( (LPCWSTR)csAgree, strAgree ) )
+    {
+      rcsWhat = L"a key file path could not be encoded";
+      return p2pcng::IdErrArgs;
+    }
+
+    p2pcng::EcdsaP256 oId;
+    p2pcng::IdResult e = p2pcng::LoadPublicKey ( strPub.c_str(), oId );
+    if ( e != p2pcng::IdOk )
+    {
+      rcsWhat.Format ( L"%s -> %hs. That file is the peer's own published "
+                       L"identity; copy it out of the peer's security directory, "
+                       L"because a login this hub cannot verify is one it refuses."
+                     , (LPCWSTR)csPub, p2pcng::IdResultText(e) );
+      return e;
+    }
+    if ( !oId.ExportPublic ( rKeys.aId ) )
+    {
+      rcsWhat.Format ( L"the public point in %s could not be exported", (LPCWSTR)csPub );
+      return p2pcng::IdErrFormat;
+    }
+
+    // Optional, and quietly so: a peer with no published agreement point still
+    // logs in. What it cannot be is a SEALING destination.
+    p2pcng::EcdhP256 oAgree;
+    if ( p2pcng::LoadAgreementPublicKey ( strAgree.c_str(), oAgree ) == p2pcng::IdOk )
+      rKeys.bAgree = oAgree.ExportPublic ( rKeys.aAgree );
+
+    p2pcng::Fingerprint ( rKeys.aId, rKeys.szFingerprint );
+    return p2pcng::IdOk;
+}
+
+//
+//  Rewrite this hub's allow-list from everything it trusts, and hand it over
+//  NOTES: REWRITTEN, NEVER APPENDED TO.  AppendAllowList does not de-duplicate
+//         -- a duplicate line is dead weight rather than a hazard, since the
+//         load takes the first match -- but a file appended to on every link
+//         and every restart grows a line per launch for ever.  The keys
+//         persist and the list is DERIVED from them, so rebuilding it is free
+//       : BUILT TO THE SIDE AND MOVED OVER, which is the same shape
+//         ReloadAllowList uses internally and is here for the same reason: a
+//         half-written allow-list is not a smaller allow-list, it is one that
+//         refuses peers that should be allowed, and the hub whose file this is
+//         may already be carrying authenticated links that depend on it
+//       : THREE COLUMNS.  The optional third is the peer's agreement point and
+//         it is what makes that peer a legal SEALING DESTINATION.  A
+//         two-column entry still logs in; asking to seal to it is REFUSED
+//         rather than downgraded, and there is deliberately no path that sends
+//         a relayed body in clear because the directory was incomplete
+//       : An entry is NOT A PATTERN.  "Demo.*" in the identity column admits
+//         nobody, which is why every peer is listed by its exact address
+//
+p2pcng::IdResult
+FacadeHub::WriteAllowList ( const CString& csDir, CString& rcsWhat )
+{
+    rcsWhat.Empty();
+
+    std::map<std::wstring, SecKeys> mapNow;
+    {
+      CSingleLock oLock ( &m_oCSectPeers, TRUE );
+      mapNow = m_mapTrusted;
+    }
+
+    const CString csAllow = csDir + SecurityStem() + L".allow";
+    const CString csTemp  = csAllow + L".new";
+
+    std::string strTemp;
+    if ( !Utf8Of ( (LPCWSTR)csTemp, strTemp ) )
+    {
+      rcsWhat = L"the allow-list path could not be encoded";
+      return p2pcng::IdErrArgs;
+    }
+
+    ::DeleteFileW ( (LPCWSTR)csTemp );
+
+    p2pcng::IdResult e = p2pcng::IdOk;
+    for ( std::map<std::wstring, SecKeys>::const_iterator it = mapNow.begin()
+        ; it != mapNow.end() && e == p2pcng::IdOk; ++it )
+    {
+      std::string strWho;
+      if ( !Utf8Of ( it->first.c_str(), strWho ) )
+        { e = p2pcng::IdErrArgs; break; }
+
+      e = p2pcng::AppendAllowList ( strTemp.c_str(), strWho.c_str()
+                                  , it->second.aId
+                                  , it->second.bAgree ? it->second.aAgree : 0 );
+    }
+    if ( e != p2pcng::IdOk )
+    {
+      ::DeleteFileW ( (LPCWSTR)csTemp );
+      rcsWhat.Format ( L"writing %s -> %hs", (LPCWSTR)csAllow, p2pcng::IdResultText(e) );
+      return e;
+    }
+
+    if ( !::MoveFileExW ( (LPCWSTR)csTemp, (LPCWSTR)csAllow, MOVEFILE_REPLACE_EXISTING ) )
+    {
+      const DWORD dwErr = ::GetLastError();
+      ::DeleteFileW ( (LPCWSTR)csTemp );
+      rcsWhat.Format ( L"%s could not be replaced (Win32 %lu)", (LPCWSTR)csAllow, dwErr );
+      return p2pcng::IdErrIo;
+    }
+
+    std::string strAllow;
+    if ( !Utf8Of ( (LPCWSTR)csAllow, strAllow ) )
+    {
+      rcsWhat = L"the allow-list path could not be encoded";
+      return p2pcng::IdErrArgs;
+    }
+
+    // SetAllowList is SetAllowList-then-ReloadAllowList in the kernel, and the
+    // reload is the call that is documented as valid on a RUNNING hub -- it
+    // builds the new list to the side and swaps it in only if it parses. So
+    // this is safe to call on a hub that is already carrying authenticated
+    // links.
+    e = SetAllowList ( strAllow.c_str() );
+    if ( e != p2pcng::IdOk )
+      rcsWhat.Format ( L"SetAllowList(%s) -> %hs", (LPCWSTR)csAllow, p2pcng::IdResultText(e) );
+    return e;
+}
+
+//
+//  Trust one peer, and enforce -- one step, because they are one decision
+//  NOTES: THE ORDER IS THE WHOLE FUNCTION.  Enforcement cannot go on BEFORE
+//         the peer is listed: the kernel refuses to arm a hub that requires
+//         authentication and lists nobody, so a hub that switched RequireAuth
+//         on at creation would never have started.  It cannot go on AFTER the
+//         connection is armed either, because then there is a window in which
+//         the link exists and authenticates nothing.  Between the two is the
+//         only correct place, and it is here -- the caller arms only once this
+//         has returned S_OK
+//       : IDEMPOTENT AND INCREMENTAL.  A hub that already trusts other peers
+//         keeps every one of them: the new peer is added to the set and the
+//         whole file is rewritten from it, so a second link off one hub does
+//         not replace the first one's line
+//       : ONE OF THE THREE ENFORCEMENT SWITCHES, AND THE OTHER TWO STAY OFF.
+//         What is provisioned here is an EDGE: two peers, each holding the
+//         other's points.  RequireAuth is a property of a LINK and is
+//         therefore exactly satisfied by that -- the login is signed both ways
+//         and the session cypher is per connection, on any transport.  Sealing
+//         and relay attestation are properties of an ORIGIN AND A DESTINATION,
+//         which for routed traffic are two hubs that are NOT linked to each
+//         other and so are not in each other's lists.  Turning them on here
+//         would refuse every routed message and every broadcast on a secure
+//         hub, at send time and at the last hop respectively -- a silent break
+//         dressed as a protection.  See ApplyDefaultPosture for what each of
+//         the three actually gates
+//       : The agreement key IS provisioned regardless, so this is a default
+//         and not a ceiling: a deployment that knows its origin/destination
+//         pairs can list them and raise either switch through the native hub
+//         (IP2PHub::GetNative).  Provisioning is the part that cannot be
+//         retro-fitted; a flag is one line
+//       : ArmOk is the pass and ArmNotRequired deliberately is NOT.  The
+//         second means authentication is off, which is exactly the state a
+//         secure hub exists to not be in
+//       : THE UNWIND IS CONDITIONAL, and the condition matters.  A hub that
+//         had no trusted peer yet is put back the way it was spawned; a hub
+//         that is ALREADY carrying authenticated links keeps its enforcement,
+//         because turning it off to tidy up after a failed call would silently
+//         open every one of them.  The peer that failed is dropped from the
+//         set either way, so a retry starts from where this began
+//
+HRESULT
+FacadeHub::TrustAndEnforce ( const wchar_t *peer, const SecKeys& rKeys
+                           , const CString& csDir, CString& rcsWhat )
+{
+    rcsWhat.Empty();
+    if ( !peer || !*peer )
+      return E_INVALIDARG;
+
+    // EVERYTHING NEEDED TO PUT THE SET BACK EXACTLY AS IT WAS FOUND, which is
+    // not the same as removing what this call wrote -- the same distinction
+    // ArmRecorded makes about m_mapArmed, and it bites here for the same
+    // reason. This hub may ALREADY trust `peer`: Disconnect leaves the
+    // allow-list entry behind (trust is not a connection), so a re-Link to a
+    // peer that was dropped goes through here with an entry present, and so
+    // does a mistaken second Connect -- which reaches this BEFORE ArmResolved
+    // has had a chance to refuse it as a duplicate. Erasing unconditionally
+    // would then withdraw trust this call never granted, and the emptied set
+    // makes the NEXT failure look like the first one, which is the branch that
+    // turns enforcement off. A hub carrying live links would be relaxed by two
+    // failures that changed nothing.
+    bool    bWasFirst = false;
+    bool    bHadEntry = false;
+    SecKeys oPrev;
+    ::memset ( &oPrev, 0, sizeof(oPrev) );
+    {
+      CSingleLock oLock ( &m_oCSectPeers, TRUE );
+      bWasFirst = m_mapTrusted.empty();
+      std::map<std::wstring, SecKeys>::const_iterator it = m_mapTrusted.find ( peer );
+      bHadEntry = ( it != m_mapTrusted.end() );
+      if ( bHadEntry )
+        oPrev = it->second;
+      m_mapTrusted[peer] = rKeys;
+    }
+
+    if ( WriteAllowList ( csDir, rcsWhat ) != p2pcng::IdOk )
+    {
+      RestoreTrust ( peer, bHadEntry, oPrev );
+      return p2pf::P2PF_E_SECURITY;
+    }
+
+    RequireAuth ( true );
+
+    const p2pauth::ArmResult eArm = AuthArm ( );
+    if ( eArm == p2pauth::ArmOk )
+      return S_OK;
+
+    rcsWhat.Format ( L"hub '%s' requires authentication and cannot enforce it "
+                     L"(%hs). File: %s"
+                   , (LPCWSTR)m_csAddress, p2pauth::AuthArmText ( eArm )
+                   , (LPCWSTR)ArmRefusalFile ( eArm ) );
+
+    RestoreTrust ( peer, bHadEntry, oPrev );
+    CString csIgnored;
+    WriteAllowList ( csDir, csIgnored );      // best effort: put the file back
+    if ( bWasFirst )
+      RelinquishSecurity ( );
+    return p2pf::P2PF_E_SECURITY;
+}
+
+//
+//  Put one entry of the trusted set back the way it was found
+//  NOTES: The rollback half of TrustAndEnforce, and a named function rather
+//         than two copies of three lines because getting it right in one of
+//         the two places and not the other is exactly the bug it exists to
+//         prevent
+//
+void
+FacadeHub::RestoreTrust ( const wchar_t *peer, bool bHadEntry
+                        , const SecKeys& rPrev )
+{
+    CSingleLock oLock ( &m_oCSectPeers, TRUE );
+    if ( bHadEntry ) m_mapTrusted[peer] = rPrev;   // the earlier trust still stands
+    else             m_mapTrusted.erase ( peer );  // nothing was granted: grant nothing
+}
+
+BOOL
+FacadeHub::Trusts ( const wchar_t *peer ) const
+{
+    if ( !peer || !*peer )
+      return FALSE;
+    CSingleLock oLock ( &m_oCSectPeers, TRUE );
+    return m_mapTrusted.find ( peer ) != m_mapTrusted.end() ? TRUE : FALSE;
+}
+
+//
+//  Withdraw one peer, and rewrite the allow-list without it
+//  NOTES: THE UNWIND FOR A LINK THAT FAILED ON ITS SECOND HUB.  "Link arms
+//         both sides" is a promise about the provisioning as much as about the
+//         two connections: a pair where one hub trusts the other and the other
+//         does not is a link that can never come up, and leaving one behind
+//         would have the next attempt start from a state nobody asked for
+//       : ENFORCEMENT IS DELIBERATELY LEFT ON.  A hub reaching this either has
+//         other links -- whose terms must not change to tidy up after a
+//         failure elsewhere -- or has none, in which case it holds an
+//         allow-list that lists nobody, requires authentication, and therefore
+//         refuses everything that arrives.  For a hub with no connections that
+//         is exactly right: it is refusing nothing that exists, and the next
+//         successful Link re-arms it through TrustAndEnforce
+//
+p2pcng::IdResult
+FacadeHub::UntrustPeer ( const wchar_t *peer, const CString& csDir
+                       , CString& rcsWhat )
+{
+    rcsWhat.Empty();
+    if ( !peer || !*peer )
+      return p2pcng::IdErrArgs;
+
+    {
+      CSingleLock oLock ( &m_oCSectPeers, TRUE );
+      m_mapTrusted.erase ( peer );
+    }
+    return WriteAllowList ( csDir, rcsWhat );
+}
+
+void
+FacadeHub::RelinquishSecurity ( )
+{
+    ApplyDefaultPosture ( );
+}
+
+//
+//  Which FILE an arming refusal is about
+//  NOTES: Naming the allow-list at a hub whose REVOCATION list is the problem
+//         is worse than naming nothing -- it sends an operator to a file that
+//         is fine, and the two live in one directory under similar names.
+//         Same choice AuthArmOrRefuse makes internally, for the same reason
+//
+CString
+FacadeHub::ArmRefusalFile ( p2pauth::ArmResult eArm )
+{
+    const bool bRevoc = ( eArm == p2pauth::ArmNoRevocation ||
+                          eArm == p2pauth::ArmRevocationUnusable );
+    const char *psz = bRevoc ? AuthRevocationListPath() : AuthAllowListPath();
+    return psz ? CString ( psz ) : CString();
+}
+
+//
+//  This hub's security posture, read back rather than remembered     (ABI 11)
+//  NOTES: Every bit is a live question put to the kernel.  A cached posture
+//         refreshed by the setters is one forgotten line away from reporting a
+//         state the hub does not have, and for this particular question that
+//         is the entire failure mode
+//       : P2PF_SEC_ARMED is NOT implied by P2PF_SEC_REQUIRED and the pair is
+//         worth reading together: required-but-not-armed is the hub that
+//         refuses everyone.  A SECURE HUB WITH NO PEERS YET reads neither of
+//         them, and that is honest rather than a gap -- it holds its keys
+//         (CAN_SIGN, CAN_OPEN, REVOCATION) and has nothing to enforce against.
+//         See ApplyDefaultPosture
+//       : const, and the const_cast is the kernel's shape rather than a lie
+//         about this one.  Every reader below is a non-const member of
+//         P2PeerHub -- AuthArm re-evaluates under the hub's own lock -- and
+//         the question is a pure one either way
+//       : The fingerprint is for a HUMAN to compare and is never an identifier
+//         this code trusts: a trust decision is made against the full public
+//         point, in the allow-list
+//
+HRESULT
+FacadeHub::GetSecurityInfo ( wchar_t *buf, unsigned int *cch
+                           , unsigned int *outFlags ) const
+{
+    AFX_MANAGE_STATE ( AfxGetStaticModuleState() );
+
+    if ( outFlags )
+      *outFlags = 0;
+
+    FacadeHub *pThis = const_cast<FacadeHub*>(this);
+
+    if ( outFlags )
+    {
+      unsigned int uFlags = 0;
+      if ( pThis->IsAuthRequired ( ) )                   uFlags |= p2pf::P2PF_SEC_REQUIRED;
+      if ( pThis->CanAuthSign    ( ) )                   uFlags |= p2pf::P2PF_SEC_CAN_SIGN;
+      if ( pThis->CanOpen        ( ) )                   uFlags |= p2pf::P2PF_SEC_CAN_OPEN;
+      if ( pThis->AuthArm        ( ) == p2pauth::ArmOk ) uFlags |= p2pf::P2PF_SEC_ARMED;
+      if ( pThis->IsSealRequired ( ) )                   uFlags |= p2pf::P2PF_SEC_SEALED;
+      if ( pThis->IsRevocationConfigured ( ) &&
+           pThis->IsRevocationUsable     ( ) )           uFlags |= p2pf::P2PF_SEC_REVOCATION;
+      *outFlags = uFlags;
+    }
+
+    if ( !cch )
+      return S_OK;
+
+    CString csFingerprint;
+    {
+      CSingleLock oLock ( &m_oCSectPeers, TRUE );
+      if ( m_bProvisioned )
+        csFingerprint = m_oSecKeys.szFingerprint;
+    }
+    return CopyOut ( csFingerprint, buf, cch );
+}
+
 //  Retract one connection this hub armed moments ago
 //  NOTES: Exists for ONE caller: FacadeNetwork::Link, unwinding the listener
 //         it armed when the dialer side then failed.  Without it "Link arms

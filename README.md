@@ -35,8 +35,9 @@ protocol), the two Dmx regressions in sections 16 and 17, the deployment map
 (18), a three-hub chain built from text (19), the login accept filter (20), and
 the ten ABI 6 methods (21), their boundaries (22), the ABI 7 message model
 (23–24), ABI 8's named fields (25), ABI 9's caller-driven pumping (26) and
-ABI 10's diagnostics (27) — see "Past the messaging slice", "The message
-model", "Named fields", "Who runs the pump" and "The kernel narrates" below.
+ABI 10's diagnostics (27), and ABI 11's secure hubs (14b) — see "Past the
+messaging slice", "The message model", "Named fields", "Who runs the pump",
+"The kernel narrates" and "Secure hubs" below.
 
 ```
 cd test\FacadeSmokeTest\x64\Debug && FacadeSmokeTestd.exe    # exit 0 = pass
@@ -53,6 +54,17 @@ green (see "What `toPeer` means on `Listen`" below).
 
 ```
 cd test\WildcardListenTest\x64\Debug && WildcardListenTestd.exe   # exit 0 = pass
+```
+
+`test/SecureWildcardTest` is a third, and the only one that is **two
+processes**: it puts a stranger in front of a secure hub's wildcard listener
+over a real TCP socket, which is the one question about `P2PF_HUB_SECURE` a
+single process cannot answer — both ends of a `Link` are hubs the facade
+provisions itself, so in-process it can only ever produce peers that are
+already trusted. 15 checks (see "Two processes, one stranger" below).
+
+```
+cd out\x64\Debug && SecureWildcardTest.exe                 # exit 0 = pass
 ```
 
 The optional COM layer in `com\` is built and tested too: 101 more checks from a
@@ -352,6 +364,17 @@ reported at arm time. And an empty `toPeer` is `E_INVALIDARG`: it nulls the
 connection's identity, so every login would be refused for ever, in silence —
 see "An empty `toPeer` is *not* a wildcard" below.
 
+On a hub created with `P2PF_HUB_SECURE` there is a third guard, and it runs
+*before* anything is armed: `toPeer` must be someone this hub can authenticate.
+For a named peer that means the two files that peer published —
+`<peer>.key.pub` and `<peer>.agree.pub` — must be in the security directory,
+because the far end may be in another process and copying them across is the
+provisioning step no library can perform for you. For a pattern it means the
+hub must already be enforcing. Either way the refusal is `P2PF_E_SECURITY`,
+with the file or the reason on the diagnostic stream, and nothing is armed —
+see "Secure hubs" below. A plain hub, which is what every ABI up to 10 could
+create, is unaffected by all of it.
+
 ## What `toPeer` means on `Listen`
 
 `Listen(toPeer, endpoint)` reads like a redundancy — a hub can only listen on
@@ -459,6 +482,25 @@ whoever they say they are". And the filter is the *only* identity check — a
 refused login is dropped with no client-visible event (the peer was never up,
 so no `OnPeerDown`), while the facade's retrying dial keeps redialling, so a
 misconfigured domain looks exactly like a peer that has not started yet.
+
+**Since ABI 11 there is an answer to the first of those, and it composes rather
+than replaces** — see "Secure hubs" below. A hub created with
+`P2PF_HUB_SECURE` may hold a pattern listener, and the two checks are
+independent: the pattern decides who may *claim* a name, the allow-list decides
+whose signature is *accepted*. `Demo.*` on a secure hub listing `Demo.A` and
+`Demo.B` admits exactly those two — a stranger who satisfies the pattern is
+refused as an unknown peer, because the allow-list lookup is keyed on the
+address off the wire and never globs. The one restriction is that a wildcard
+may not be a secure hub's *first* arm: with an empty allow-list it has never
+turned enforcement on, and would accept anyone. Everything in this section is
+about a **plain** hub, which is what it was measured on.
+
+That is **measured**, in `SecureWildcardTest`, and it needed two processes to
+be worth anything: both ends of a `Link` are hubs the facade provisions itself,
+so a single-process test can only ever produce peers that are already trusted.
+The interesting peer is the one that turns up uninvited, and it has to come
+from somewhere the facade did not make. See "Two processes, one stranger"
+below.
 
 Two sharp edges found while building that test, both of which cost a Release
 crash to locate and neither specific to patterns:
@@ -1158,6 +1200,192 @@ exists to keep a slow script off the kernel's threads, and this contract is
 "you are on the kernel's thread". A script that took the process's one logging
 slot would also switch off the host application's.
 
+## Secure hubs (ABI 11)
+
+TargetCore has carried a signed login, a per-connection session cypher, an
+allow-list, a revocation list and an arming gate for some time, and **none of
+it was reachable from here.** A facade hub was created from an address and a
+sink; there was no argument through which a key file, an allow-list or a
+revocation list could arrive — so every hub this facade has ever made has been
+an unprovisioned one, spawned with the kernel's enforcement switches turned
+off. That is the library's own documented migration for a tree nobody has
+provisioned, and it is still what `CreateHub` gives you.
+
+The opt-in is **one bit, in the flags word `CreateHubEx` already had**:
+
+```cpp
+p2pf::Hub a = net.createHub ( L"Demo",        p2pf::P2PF_HUB_SECURE );
+p2pf::Hub b = net.createHub ( L"Demo.Client", p2pf::P2PF_HUB_SECURE );
+net.link ( L"Demo", L"Demo.Client" );        // and that is the whole of it
+```
+
+```vbscript
+' the same thing from a script
+Set a = net.CreateSecureHub("Demo")
+Set b = net.CreateSecureHub("Demo.Client")
+net.Link "Demo", "Demo.Client"
+```
+
+Note the verb that did *not* change. `Link` is still `Link`, with the same
+three arguments — because **authentication is a property of a hub, not of a
+link.** Enforcement in TargetCore is hub-wide with no per-connection override,
+so "is this link authenticated" was never a question one link could answer: a
+hub either demands a signed login from everything that reaches it or from
+nothing. Saying it once, when the hub is made and before it can have a
+connection at all, is the only place the answer is not retroactive — a hub that
+could be secured later is one whose existing links silently changed terms, and
+one that could be relaxed later is one whose secure links silently opened.
+
+What the flag arranges, and none of it appears in the header:
+
+| | |
+| --- | --- |
+| **identity key** | ECDSA P-256, created on the hub's first run and **found** on every run after — a first-run helper that rotated on restart would change a hub's identity behind the operator's back. Its publishable half is written beside it as `<stem>.key.pub`. |
+| **agreement key** | ECDH P-256, the separate key others seal *to*, published as `<stem>.agree.pub`. Deliberately not the identity and deliberately unable to be: different container magic, different entropy, so a swapped file fails loudly. |
+| **allow-list** | three columns, which the hub adds to as it is linked. This is the half of provisioning that is not mechanical — *who do you trust* — and where the answer comes from depends on the verb (below). |
+| **revocation list** | shared by every secure hub of the process. A **position**, not a feature: an all-comments file is the honest "nothing revoked yet", and a configured list that will not load fails **closed**. |
+| **enforcement** | authentication required — a signed login with a per-connection session cypher, on any transport. |
+
+### Where the peer's key comes from
+
+`Link` joins two hubs **this network owns, in this process**, so the key
+exchange an operator would otherwise do by hand is a memcpy — the network is
+the only object that holds both hubs. Both ends must be secure or neither must:
+a secure hub demands a login a plain one holds no key to produce, so the mixed
+pair is `P2PF_E_SECURITY` with nothing armed, rather than two connections that
+could never come up.
+
+`Listen` and `Connect` can name a hub in **another process, on another
+machine**, where this process has no way to learn a public point except to be
+handed it. So they read the two files that peer published for itself —
+`<peerstem>.key.pub` and `<peerstem>.agree.pub`, out of the same directory this
+hub published its own into. **Copying those two files across is the
+provisioning step**, and it is the one part no library can do for you. If they
+are not there the call is refused, with the file named, rather than armed
+without authentication.
+
+A **pattern** listener — `"Demo.*"` — names no peer whose key could be looked
+up, so it is admitted on a different question: *is this hub already
+authenticating?* It is worth being exact about why, because two true statements
+weld easily into a false one. An allow-list entry is not a pattern — the kernel
+compares identities with an exact compare, so `Demo.*` in that column admits
+nobody. That does **not** make a wildcard listener unauthenticatable, and
+nothing in the kernel says it does: the allow-list lookup is keyed on the
+source address *off the wire*, and the pattern is applied afterwards as an
+accept filter on the name the peer claimed. Auth policy lives on the hub, so an
+accepted connection inherits it. A hub that requires authentication and lists
+A and B may therefore listen on `Demo.*` and will authenticate exactly those
+two — the pattern narrows who may *claim* to log in, the allow-list decides
+whose signature is *accepted*, and a stranger who satisfies the pattern still
+dies as an unknown peer.
+
+What a wildcard may not be is a secure hub's **first** arm. A hub whose only
+listener is a pattern has an empty allow-list, has therefore never turned
+enforcement on, and would sit there accepting anyone at all — a hub the client
+asked to be secure quietly behaving as a plain one, which is the single outcome
+the flag exists to rule out. So that is `P2PF_E_SECURITY`, saying to link or to
+listen for one named peer first. A plain hub is unaffected: it takes a wildcard
+listener with no provisioning at all, exactly as it always has.
+
+### When enforcement goes on
+
+Not at creation, and the reason is the kernel's: it refuses to *start* a hub
+that requires authentication and trusts nobody, because an allow-list that
+lists nobody refuses everybody (`p2pauth::ArmEmptyAllow`) — and that refusal is
+far better at startup than at 3am on the first connection. So a secure hub is
+created holding its keys with enforcement off, and turns it on as it takes the
+first peer it can authenticate, at which point the kernel's own arming gate is
+re-run and the connection is armed only if the hub passes it. A secure hub with
+no peers has nothing to enforce and nothing exposed.
+
+```cpp
+unsigned int f = a.securityFlags ( );
+// P2PF_SEC_REQUIRED | P2PF_SEC_ARMED | P2PF_SEC_CAN_SIGN
+// | P2PF_SEC_CAN_OPEN | P2PF_SEC_REVOCATION
+a.securityFingerprint ( );   // "4E3A-2E33-D5B5-EAB1-F13A-4175-0597-F01A"
+```
+
+`P2PF_SEC_ARMED` is the bit that matters and it is **not** implied by
+`P2PF_SEC_REQUIRED`: a hub can require authentication and be unable to perform
+it, and that combination refuses every peer rather than authenticating any. A
+fresh secure hub reads `CAN_SIGN | CAN_OPEN | REVOCATION` and neither of the
+other two, which is the honest description of a hub holding keys it has not yet
+been asked to use.
+
+### What it deliberately does not turn on
+
+TargetCore also defaults to requiring an end-to-end **seal** on any body that
+will cross an intermediate hub, and an **origin attestation** on anything
+arriving down an ancestor link. Both are properties of an *origin and a
+destination*; this flag secures a hub and its *edges*. For routed traffic — the
+whole point of `Send` routing multi-hop and of `Link` being per edge — the
+origin and destination are two hubs that are not linked to each other and so
+are not in each other's allow-lists, and requiring either would refuse every
+routed message and every broadcast on a secure hub. A silent break dressed as a
+protection is worse than the honest scope, so the scope is honest: **every link
+of this hub is authenticated and encrypted.** The agreement key is provisioned
+anyway, so a deployment that knows its origin/destination pairs can list them
+and raise either switch itself through `GetNative`.
+
+Key material lives in a `p2p\` directory beside `TargetFacade.dll`, resolved
+from the module's own path so a copy of the tree elsewhere just works and a
+stale key from another build is never picked up silently. `SetSecurityDir`
+moves it, and only **before** the first secure hub: afterwards a hub holds keys
+loaded from the old one, and a call that appeared to relocate them but did not
+would be worse than a refusal. Deleting the directory re-provisions from
+scratch — and changes every hub's identity.
+
+### Two processes, one stranger
+
+Everything above about a secure hub is provable in one process except the thing
+that matters most: **does the wildcard listener actually turn away someone it
+does not know?** In-process it cannot be asked. Both ends of a `Link` are hubs
+the facade provisions itself, so the only peers such a test can mint are ones
+that are already trusted. The interesting peer has to come from somewhere the
+facade did not make.
+
+`test/SecureWildcardTest` is that, over a real TCP socket. One executable, three
+modes — it spawns itself, because the child needs the identical facade build:
+
+| | |
+| --- | --- |
+| **S1** | a secure hub's *named* listener admits a peer from **another process** whose published key it holds — the positive case |
+| **S2** | ...and its *wildcard* listener **refuses** a stranger that satisfies the pattern but is not in the allow-list — the question |
+| **S3** | ...while a **plain** hub's wildcard listener admits that identical stranger — the control |
+
+S3 is what gives S2 its meaning. The rogue is named `SW.Rogue`, so it *satisfies*
+`SW.*` — if it is refused, the pattern is not what refused it. S3 then runs the
+same name shape, the same transport and the same pattern against a hub that
+differs by exactly one flag, and it comes straight up. One difference between
+the two runs, and it is `P2PF_HUB_SECURE`.
+
+Three details are what stop this passing for the wrong reason:
+
+* **The rogue's exit code is asserted exactly**, not merely as non-zero. A child
+  that failed to build a hub, could not read the key directory, or had its
+  `Connect` refused outright would also be non-zero and would prove nothing. The
+  run that means something is the one where the socket connected, the login was
+  sent, and the peer still never came up.
+* **The stranger had a valid identity of its own.** It is a fully provisioned
+  secure hub — it published `SW.Rogue.key.pub`, and its own allow-list trusts
+  `SW`, so it signed its login perfectly well. The test reads `SW.allow` back off
+  the disk afterwards and asserts it names `SW.Trusted` and **not** `SW.Rogue`.
+  The single thing the rogue lacked was a line in that file.
+* **The listening side's own `OnPeerUp` is the record**, not `IsPeerUp`. The
+  parent waits for each child, and a child closes its hub before exiting — so by
+  the time `IsPeerUp` could be asked, the peer is gone whatever happened, and the
+  first draft of this test got a false failure out of a connection that had
+  worked. An event recorded when it fires outlives the connection, which is the
+  only shape that distinguishes *never logged in* from *logged in and went away*.
+
+The key exchange is the real one. A secure hub publishes `<stem>.key.pub` and
+`<stem>.agree.pub` when it is created, and a secure `Listen`/`Connect` reads the
+far end's two files back; across machines an operator copies them, and here both
+processes are pointed at one directory. Note the ordering that forces: the
+parent cannot listen for `SW.Trusted` until `SW.Trusted` has published, so the
+child is run once in `--provision` mode first. That is not a quirk of the test —
+that *is* provisioning.
+
 ## Design decisions
 
 * **Pure-vtable interfaces + `extern "C"` factory.** No exported C++ classes,
@@ -1200,7 +1428,16 @@ slot would also switch off the host application's.
   ABI 6's rule means it had to be a *new* interface rather than a wider
   `IP2PHubEvents` — but nothing in that rule says it must be the same object,
   and here it deliberately is not: a log view is not the thing that handles
-  your messages. The factory accepts 4 through 10.
+  your messages.
+  **ABI 11 appends one to `IP2PNetwork` and one to `IP2PHub`**, adds no new
+  interface at all, and adds one *bit* — `P2PF_HUB_SECURE`, in the flags word
+  `CreateHubEx` has taken since ABI 9. That is the whole opt-in: security is a
+  property of a hub, so it is settled where a hub is made, and `Link`, `Listen`
+  and `Connect` all keep their slots *and* their signatures. The two appended
+  methods only make it operable — `SetSecurityDir` (where the keys are) and
+  `IP2PHub::GetSecurityInfo` (whether they took). A client that never passes
+  the flag gets the hub and the link it always got. The factory accepts 4
+  through 11.
   **ABI 7 appends three more to `IP2PHub`** (`SendEx`, `BroadcastEx`,
   `GetMsgInfo`), so the factory accepts 4 through 7. Note where they are *not*:
   there is no `IP2PHubEvents3`. The receive half of ABI 7 is a method on the
@@ -1311,6 +1548,24 @@ make it possible — that constraint is why the header looks the way it does.
   in-process Dmx name from the address pair. `Link` answers
   `P2PF_S_UNRELATED_LINK` for a sibling pair like every other arming verb, and
   like them the automation tier cannot see it — ask `RelationTo` afterwards.
+* **The security pair was appended** (`CreateSecureHub` and `SetSecurityDir`
+  at dispids `9`–`10`, and `SecurityInfo` at hub dispid `32`), again
+  additively — `CreateHub` keeps dispid `1` and `Link` keeps dispid `4`
+  *and* its three-argument signature, so no existing script and no existing
+  early-bound client moves. This is the tier that could not have authenticated
+  hubs any other way: everything the flag arranges is file paths, key
+  containers and 64-byte points, and a script can express none of it. It is a
+  **second creation verb rather than an argument on `CreateHub`**, for two
+  reasons — an argument would change a signature every early-bound client is
+  compiled against, and `secure` as a defaulted argument leaves
+  `CreateHub("Demo")` looking like a decision when it is a default. Two verbs,
+  and the one with the word in it means it. `SecurityInfo` is on the **hub**,
+  because that is what has a posture, and it answers **prose** rather than a
+  flags word for the reason `Description` does: there are no `P2PF_SEC_*`
+  constants at this tier to mask against, and a script asking whether security
+  is on is reading the answer — *`fingerprint=4E3A-… required=1 armed=1
+  signs=1 opens=1 seals=0 revocation=1`*. A plain hub answers it too, with
+  `(none)` and zeros: asking whether something is secure should not raise.
 * **The deployment map was appended too** (dispids `5`–`7`: `SetEndpoint`,
   `SetEndpointMap`, `EndpointFor`), again additively, again with an unchanged
   IID. This is the tier that wanted it most, for a reason peculiar to it: a
@@ -1477,6 +1732,36 @@ both arming calls returned `P2PF_S_UNRELATED_LINK` and the script saw `S_OK`
 twice — no return code, and no event either. It now calls `RelationTo`,
 `ConCount`, `PeerAt`, `EndpointFor` and prints `Description`, all late-bound
 through `IDispatch`, and reads the sibling shape straight off the flags.
+
+It also drives a **secure hub**, which is the part of this ABI a script could
+not have reached in any other shape: everything behind `CreateSecureHub` is an
+ECDSA identity, its publishable point, an ECDH agreement key, a three-column
+allow-list, a revocation list and the kernel's arming gate, and there is no
+signature through which a script could hand over any of it. One verb, and the
+hub that comes back demands a signed login from every peer it links to —
+`Link` is still `Link`, with the same arguments, because the decision was made
+where the hub was.
+
+```
+ok    a fresh secure hub holds its keys and requires nothing yet
+ok    the peer came up, so the SIGNED login completed both ways
+ok    ...and the hub requires auth AND can enforce it
+      fingerprint=A088-63CA-F099-4E6A-29EF-75ED-3F97-12E9
+      required=1 armed=1 signs=1 opens=1 seals=0 revocation=1
+ok    each hub has its own identity fingerprint
+ok    a secure hub cannot be linked to a plain one (p2pfSecurity)
+ok    ...and the message says which verb makes both ends match
+ok    a plain hub reads back as holding no identity at all
+```
+
+The assertion that carries it is `armed=1` and not `required=1`: a hub can
+require authentication and be unable to perform it, and that state refuses
+every peer rather than authenticating any — so a secure hub that had quietly
+fallen back to a plain one would pass the `IsPeerUp` check above exactly as
+this one does. The first line is the other half worth reading: a secure hub
+holds its keys from birth and requires nothing until it has a peer to require
+it *of*, because an allow-list that lists nobody refuses everybody and the
+kernel will not start such a hub at all.
 
 It also exercises the later additions, and each is worth seeing from this tier
 specifically. `$net.Link("Script.Link", "Script.Link.Peer")` — two arguments,

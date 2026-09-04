@@ -43,7 +43,8 @@ class FacadeHub : public P2PeerHub, public p2pf::IP2PHub
     public:
         FacadeHub ( P2PaddrSTR strAddress
                   , p2pf::IP2PHubEvents *pEvents
-                  , FacadeNetwork *pOwner );
+                  , FacadeNetwork *pOwner
+                  , bool bSecure = false );
       virtual
        ~FacadeHub ( );
 
@@ -142,6 +143,9 @@ class FacadeHub : public P2PeerHub, public p2pf::IP2PHub
       virtual HRESULT GetPending    ( unsigned int *outCount ) const;
       virtual HRESULT GetPumpInfo   ( unsigned int *outFlags
                                     , unsigned int *outThreadId ) const;
+      // --- ABI 11 ---------------------------------------------------------
+      virtual HRESULT GetSecurityInfo ( wchar_t *buf, unsigned int *cch
+                                      , unsigned int *outFlags ) const;
 
     // Facade-internal arming (used by FacadeNetwork::Link)
     public:
@@ -187,6 +191,163 @@ class FacadeHub : public P2PeerHub, public p2pf::IP2PHub
         CString
           ArmedListener ( const wchar_t *peer ) const;
 
+    // Security -- a property of THIS HUB, settled at construction  -- ABI 11
+    //
+    // WHY ALL OF IT IS HERE. Every switch behind it is the kernel's and every
+    // one of them lives on P2PeerHub -- the identity, the agreement key, the
+    // allow-list, the revocation position and the enforcement flags are all
+    // read under the hub's own critical section, and an accepted connection is
+    // built from a hand-maintained list of copied fields, so a security
+    // setting parked on a CONNECTION is one forgotten line away from silently
+    // not applying. There is no per-connection override in the kernel and
+    // there is none here.
+    //
+    // WHAT THE NETWORK STILL DOES, and it is one thing: for a Link it holds
+    // BOTH hubs, so it can hand each one the other's public points. That is
+    // the exchange an operator would otherwise perform with two published
+    // files, and it is possible only because there is no wire between them.
+    // Everything else -- generating, publishing, trusting, enforcing, gating
+    // -- is below.
+    public:
+        // Created with P2PF_HUB_SECURE?  Fixed for the hub's whole life: a
+        // hub that could be secured later would be one whose existing links
+        // silently changed terms, and one that could be relaxed later would be
+        // one whose secure links silently opened.
+        BOOL
+          IsSecure ( ) const { return m_bSecure; }
+
+        // The publishable halves of one hub's provisioning, as they go into
+        // the OTHER hub's allow-list.
+        struct SecKeys
+        {
+            unsigned char aId    [p2pcng::kEcdsaPubLen];  // ECDSA - proves identity
+            unsigned char aAgree [p2pcng::kEcdhPubLen];   // ECDH  - what others seal to
+            bool          bAgree;
+            char          szFingerprint [p2pcng::kIdFingerprintLen];
+        };
+
+        // Give this hub an identity and an agreement key under `csDir`, and
+        // keep the two publishable points.  Called by CreateHubEx BEFORE the
+        // pump exists, so a hub that cannot be provisioned is never created.
+        //
+        // IDEMPOTENT, AND THAT IS THE LIBRARY'S ASYMMETRY RATHER THAN A CHOICE
+        // MADE HERE: ProvisionAuth run twice FINDS the key rather than
+        // replacing it, because a first-run helper that rotated on restart
+        // would change a hub's identity behind the operator's back. `rcsWhat`
+        // receives a sentence naming the file and the failure when the answer
+        // is not IdOk.
+        p2pcng::IdResult
+          ProvisionSelf ( const CString& csDir, const CString& csRevoke
+                        , CString& rcsWhat );
+        BOOL
+          IsProvisioned ( ) const { return m_bProvisioned; }
+        const SecKeys&
+          Keys ( ) const { return m_oSecKeys; }
+
+        // Trust one peer and ENFORCE, in that order and as one step.
+        //
+        // ONE FUNCTION BECAUSE THEY ARE ONE DECISION. Adding a peer to the
+        // allow-list is what makes enforcement possible -- the kernel refuses
+        // to arm a hub that requires authentication and lists nobody -- so the
+        // first TrustAndEnforce on a hub is also the call that switches
+        // RequireAuth on, and it must not return success unless the kernel's
+        // own arming gate then passes. `rcsWhat` gets the sentence, naming the
+        // file, when it does not.
+        //
+        // THE UNWIND IS CONDITIONAL, and the condition matters: a hub that had
+        // no trusted peer yet is put back the way it was spawned, and a hub
+        // that is ALREADY carrying authenticated links is left alone --
+        // turning its enforcement off to tidy up after a failure would
+        // silently open every link it already has.
+        HRESULT
+          TrustAndEnforce ( const wchar_t *peer, const SecKeys& rKeys
+                          , const CString& csDir, CString& rcsWhat );
+
+        // Does this hub already hold `peer` in its trusted set?  Asked by
+        // FacadeNetwork::SecureEdgeLocked before it unwinds: trust is not a
+        // connection, so a hub can already trust a peer it is being linked to
+        // again, and withdrawing that on a failure would take away something
+        // this call never granted.
+        BOOL
+          Trusts ( const wchar_t *peer ) const;
+
+        // Withdraw one peer this hub was told to trust, and rewrite the
+        // allow-list without it.  The unwind for a Link whose SECOND hub
+        // refused after the first had accepted -- "arms both sides" is a
+        // promise about the provisioning too, not only about the two
+        // connections.  Enforcement is deliberately left ON: a hub that
+        // reaches this has other links, or is about to be told again.
+        p2pcng::IdResult
+          UntrustPeer ( const wchar_t *peer, const CString& csDir
+                      , CString& rcsWhat );
+
+        // Admit a PATTERN peer -- "Demo.*" -- on a secure hub.  A pattern
+        // names no peer whose key could be looked up, so the question is not
+        // "can I provision this" but "am I already enforcing": the kernel
+        // authenticates whoever arrives against the name they CLAIM, and the
+        // pattern is only an accept filter over that.  See the definition.
+        HRESULT
+          AdmitPatternPeer ( const wchar_t *peer );
+
+        // Trust one peer off the two files IT published, and enforce -- the
+        // whole of the cross-process provisioning path, and what Listen and
+        // Connect do on a secure hub before they arm anything.
+        HRESULT
+          TrustPublishedPeer ( const wchar_t *peer );
+
+        // The peer's public halves, read from the two files a secure hub
+        // publishes for itself: "<peerstem>.key.pub" and, optionally,
+        // "<peerstem>.agree.pub".
+        //
+        // THIS IS THE CROSS-PROCESS PATH and the only one there can be. For a
+        // Link the network hands over the peer's keys directly, because it
+        // holds both hubs; for Listen/Connect the far end may be anywhere, so
+        // the exchange is two files an operator copied -- which is exactly the
+        // provisioning step this facade cannot do for them. IdErrNotFound with
+        // `rcsWhat` naming the file is the honest answer to "I have no key for
+        // that peer", and it is a refusal rather than a plain link.
+        static p2pcng::IdResult
+          LoadPeerKeys ( const wchar_t *peer, const CString& csDir
+                       , SecKeys& rKeys, CString& rcsWhat );
+
+        // The file stem an address's key material is filed under. See the
+        // definition for what is done about an address that is not a legal
+        // file name.
+        static CString
+          SecurityStemOf ( const CString& csAddress );
+        CString
+          SecurityStem ( ) const { return SecurityStemOf ( m_csAddress ); }
+
+    // Internals
+    private:
+        // Put the hub back the way it was SPAWNED -- enforcement off. The
+        // unwind for a hub that TrustAndEnforce turned on and that then would
+        // not arm. The keys it holds are left where they are; they are files,
+        // they cost nothing, and destroying an identity to unwind one link
+        // would change what the hub is the next time it is asked to be secure.
+        void
+          RelinquishSecurity ( );
+        // Put one entry of the trusted set back the way it was FOUND, which is
+        // not the same as removing what a call wrote -- see TrustAndEnforce.
+        void
+          RestoreTrust ( const wchar_t *peer, bool bHadEntry
+                       , const SecKeys& rPrev );
+        // Which FILE a refusal is about. Sending an operator to the allow-list
+        // when the revocation list is the problem is worse than naming nothing:
+        // the two live in one directory under similar names.
+        CString
+          ArmRefusalFile ( p2pauth::ArmResult eArm );
+        // Rewrite this hub's allow-list from everything it trusts, and hand it
+        // to the kernel. See the definition for why it is a REWRITE.
+        p2pcng::IdResult
+          WriteAllowList ( const CString& csDir, CString& rcsWhat );
+        // One sentence about a security refusal, onto the diagnostic stream as
+        // an error. P2PF_E_SECURITY is one code covering a family of file
+        // problems, and a code with no sentence sends an operator through a
+        // directory by hand.
+        void
+          RaiseSecurityError ( const wchar_t *what );
+
     // Internals
     private:
         // Arm one connection: enable the BCast/UCast relays on it, hand it to
@@ -211,6 +372,13 @@ class FacadeHub : public P2PeerHub, public p2pf::IP2PHub
         HRESULT
           ResolveEndpoint ( const wchar_t *peer, bool bListen
                           , FacadeEndpoint& rEp );
+        // The security posture EVERY hub is spawned with, secure or not,
+        // applied before the pump exists because that is the only point at
+        // which the kernel reads it as a gate.  See the definition -- a secure
+        // hub differs only in holding keys, and it turns enforcement on later,
+        // when it has a peer to enforce against.              (ABI 11)
+        void
+          ApplyDefaultPosture ( );
 
     // Read side
     private:
@@ -526,4 +694,28 @@ class FacadeHub : public P2PeerHub, public p2pf::IP2PHub
         // it would be driving is gone. Interlocked: Close() sets it from the
         // owning thread, but GetPumpInfo may be asked from any.
         volatile LONG                 m_bPumpDone;
+
+        // --- ABI 11 ---------------------------------------------------------
+        // Whether this hub was created with P2PF_HUB_SECURE, and the material
+        // it was given if it was.
+        //
+        // m_bSecure is written once, by the constructor, and read without a
+        // lock everywhere after -- it cannot change, so there is nothing to
+        // serialise. The rest is under m_oCSectPeers like the maps above it,
+        // and for the same reason: a client thread adds a trusted peer while a
+        // pump thread is inside a login that is enforcing the list. The KEYS
+        // themselves are not here -- they are the kernel's, held by the hub's
+        // AuthPolicy; what is kept is the PUBLIC halves, because a peer's
+        // allow-list needs them and the kernel offers no way to read another
+        // hub's back out.
+        const bool                    m_bSecure;
+        bool                          m_bProvisioned;
+        SecKeys                       m_oSecKeys;
+        // Every peer this hub has been told to trust, and with what. The
+        // allow-list FILE is rewritten from this on every addition -- see
+        // WriteAllowList for why it is a rewrite and not an append.
+        std::map<std::wstring, SecKeys> m_mapTrusted;
+        // The directory this hub's key material came from, kept because the
+        // arming verbs need it after CreateHubEx resolved it once.
+        CString                       m_csSecDir;
 };

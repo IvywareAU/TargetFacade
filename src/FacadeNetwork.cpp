@@ -185,16 +185,27 @@ FacadeNetwork::CreateHub ( const wchar_t *address
 }
 
 //
-//  CreateHub, plus WHOSE THREAD                                       (ABI 9)
-//  NOTES: The only difference between the two shapes is one call -- SpawnHub
-//         against P2PeerHub::CreateHub -- and it is made in the middle of a
-//         sequence whose every other step is identical.  Hence one function
+//  CreateHub, plus WHOSE THREAD and WHETHER IT AUTHENTICATES  (ABI 9, ABI 11)
+//  NOTES: The only difference between the two pump shapes is one call --
+//         SpawnHub against P2PeerHub::CreateHub -- and it is made in the middle
+//         of a sequence whose every other step is identical.  Hence one
+//         function
 //       : P2PF_E_HUB_SPAWN covers the caller-pumped failure too, and it is the
 //         honest code rather than a lazy one: what went wrong is that no pump
 //         could be started for this hub.  The commonest cause is specific and
 //         worth knowing -- the kernel allows one pump per THREAD, so a thread
 //         that already drives a caller-pumped hub, or that is itself some
 //         other hub's pump thread, cannot have another
+//       : P2PF_HUB_SECURE IS PROVISIONED BEFORE THE PUMP EXISTS, and that
+//         ordering is the reason security is a creation-time flag at all.  A
+//         hub that cannot be given an identity is never created -- not created
+//         and then quietly insecure, and not created and then refused on its
+//         first link, by which time a client is holding it and has wired
+//         handlers to it.  The failure is P2PF_E_SECURITY with the file named
+//         on the diagnostic stream, and no hub comes back
+//       : What it does NOT do here is turn enforcement on; that waits for the
+//         first peer.  See FacadeHub::ApplyDefaultPosture, which is where the
+//         kernel's own reason for it is written down
 //
 HRESULT
 FacadeNetwork::CreateHubEx ( const wchar_t *address
@@ -209,7 +220,7 @@ FacadeNetwork::CreateHubEx ( const wchar_t *address
     *outHub = 0;
     if ( !*address )
         return E_INVALIDARG;
-    if ( flags & ~p2pf::P2PF_HUB_CALLER_PUMPED )
+    if ( flags & ~( p2pf::P2PF_HUB_CALLER_PUMPED | p2pf::P2PF_HUB_SECURE ) )
         return E_INVALIDARG;
 
     // Reject a duplicate address BEFORE spawning anything: a second live hub
@@ -221,8 +232,37 @@ FacadeNetwork::CreateHubEx ( const wchar_t *address
     }
 
     const bool bCallerPumped = ( flags & p2pf::P2PF_HUB_CALLER_PUMPED ) != 0;
+    const bool bSecure       = ( flags & p2pf::P2PF_HUB_SECURE        ) != 0;
 
-    FacadeHub *pHub = new FacadeHub ( address, events, this );
+    // The directory and the shared revocation list, resolved before anything
+    // is manufactured. Both are refusals a caller can act on, and both are
+    // cheaper to hit here than after a pump is running.
+    CString csSecDir, csSecRevoke;
+    if ( bSecure )
+    {
+      HRESULT hrPaths = SecurityPaths ( csSecDir, csSecRevoke );
+      if ( FAILED(hrPaths) )
+        return hrPaths;
+    }
+
+    FacadeHub *pHub = new FacadeHub ( address, events, this, bSecure );
+
+    // Keys BEFORE the pump: a hub that cannot be provisioned is never created.
+    if ( bSecure )
+    {
+      CString csWhat;
+      if ( pHub->ProvisionSelf ( csSecDir, csSecRevoke, csWhat ) != p2pcng::IdOk )
+      {
+        CString csWhy;
+        csWhy.Format ( L"TargetFacade: hub '%s' could not be provisioned: %s. "
+                       L"No hub was created."
+                     , address, (LPCWSTR)csWhat );
+        RaiseSecurityError ( csWhy );
+        delete pHub;
+        return p2pf::P2PF_E_SECURITY;
+      }
+    }
+
     if ( !( bCallerPumped ? pHub->StartCallerPumped() : pHub->Start() ) )
     {
       delete pHub;
@@ -272,7 +312,7 @@ FacadeNetwork::Release ( )
 const wchar_t*
 FacadeNetwork::VersionString ( ) const
 {
-    return L"TargetFacade ABI 10 / TargetCore(2022)";
+    return L"TargetFacade ABI 11 / TargetCore(2022)";
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -474,9 +514,9 @@ FacadeNetwork::LookupEndpoint ( const wchar_t *address
 //  Arm the listening side and then the dialing side of one in-process edge
 //  NOTES: Everything that CAN be checked before anything is manufactured is
 //         checked first -- unknown address, self-link, swapped argument,
-//         unparseable endpoint, and a peer either hub already has a
-//         connection for.  Those are the realistic failures, and for all of
-//         them nothing is armed at all
+//         unparseable endpoint, a peer either hub already has a connection
+//         for, and a mismatched pair of security postures.  Those are the
+//         realistic failures, and for all of them nothing is armed at all
 //       : If the dialer still fails, the listener is retracted.  "Arms both
 //         sides" is a promise of atomicity, and a half-armed edge is the one
 //         outcome worth ruling out: FacadeHub offers only whole-hub Close(),
@@ -487,6 +527,12 @@ FacadeNetwork::LookupEndpoint ( const wchar_t *address
 //         does cost: a concurrent CreateHub/Close blocks for the duration,
 //         and on the unwind path that duration includes a bounded wait.  That
 //         is the right trade for a call that is made at startup
+//       : THE SECURITY WORK SITS BETWEEN THE LAST PRE-FLIGHT CHECK AND THE
+//         FIRST ARM, and that position is the whole of it.  Everything that
+//         can be refused is refused before an allow-list is touched;
+//         everything provisioning can refuse is refused before a connection is
+//         armed.  There is no ordering in which a pair of secure hubs gets a
+//         link that authenticates nothing                             (ABI 11)
 //
 HRESULT
 FacadeNetwork::Link ( const wchar_t *listenerAddr, const wchar_t *dialerAddr
@@ -564,6 +610,38 @@ FacadeNetwork::Link ( const wchar_t *listenerAddr, const wchar_t *dialerAddr
          pDialer  ->ConExists ( listenerAddr ) )
       return p2pf::P2PF_E_CON_DUPLICATE;
 
+    // BOTH SECURE OR NEITHER. Enforcement is hub-wide in the kernel with no
+    // per-connection override, so a secure hub demands a signed login from
+    // everything that reaches it -- including a plain hub, which holds no
+    // identity and cannot produce one. That pair would arm two connections
+    // that could never log in; the refusal says so instead, before anything
+    // is armed. Both hubs answered this question when they were CREATED, so
+    // there is nothing here that could have gone either way.
+    if ( pListener->IsSecure ( ) != pDialer->IsSecure ( ) )
+    {
+      CString csWhy;
+      csWhy.Format ( L"TargetFacade: hub '%s' is %s and hub '%s' is %s, so the "
+                     L"login one of them demands is one the other cannot perform. "
+                     L"Create both with P2PF_HUB_SECURE or neither. Nothing was "
+                     L"armed."
+                   , pListener->Address ( )
+                   , pListener->IsSecure ( ) ? L"secure" : L"plain"
+                   , pDialer  ->Address ( )
+                   , pDialer  ->IsSecure ( ) ? L"secure" : L"plain" );
+      RaiseSecurityError ( csWhy );
+      return p2pf::P2PF_E_SECURITY;
+    }
+
+    // Allow-lists and enforcement, on both hubs, and NOTHING ARMED BY IT --
+    // this either succeeds, at which point each hub holds the other and both
+    // have said they can honour it, or it fails having armed no connection.
+    if ( pListener->IsSecure ( ) )
+    {
+      HRESULT hrSec = SecureEdgeLocked ( pListener, pDialer );
+      if ( FAILED(hrSec) )
+        return hrSec;
+    }
+
     HRESULT hrListen = pListener->ArmResolved ( dialerAddr, oListen, true );
     if ( FAILED(hrListen) )
       return hrListen;                              // nothing armed anywhere
@@ -579,6 +657,334 @@ FacadeNetwork::Link ( const wchar_t *listenerAddr, const wchar_t *dialerAddr
     return ( hrListen == p2pf::P2PF_S_UNRELATED_LINK ||
              hrDial   == p2pf::P2PF_S_UNRELATED_LINK   )
            ? p2pf::P2PF_S_UNRELATED_LINK : S_OK;
+}
+
+///////////////////////////////////////////////////////////////////////
+//  ABI 11 -- security
+//
+//  WHAT IS LEFT ON THE NETWORK, which is deliberately almost nothing.  Security
+//  is a property of a HUB -- the kernel's enforcement is hub-wide and so is the
+//  facade's flag -- so generating, publishing, trusting and enforcing all live
+//  on FacadeHub.  Two things cannot:
+//
+//    * WHERE THE FILES ARE.  The revocation list is shared by every secure hub
+//      of the process, because revoking a key is an operator editing one file
+//      and a per-hub file would mean doing that once per hub and getting it
+//      wrong once per hub.  One directory, resolved once, and a hub asks for it
+//      rather than working it out.
+//    * THE EXCHANGE, for a Link.  Every step a secure hub takes is one an
+//      operator provisioning two machines would take by hand -- generate a key,
+//      publish its point, paste that line into the other end's allow-list, name
+//      a revocation list, turn enforcement on, check the hub will arm -- and
+//      every one of them is mechanical EXCEPT paste-into-the-other-end, which
+//      needs both ends.  For Listen/Connect the far end may be in another
+//      process and an operator copies two published files; for Link both ends
+//      are hubs THIS network owns, in THIS process, and the network is the only
+//      object that holds them both.  So the one thing this file does that
+//      FacadeHub cannot is hand each hub the other's public points.
+
+//
+//  Where the key material lives
+//  NOTES: Beside the loaded MODULE rather than the working directory, and
+//         resolved from the module's own path rather than from a constant, so
+//         a copy of the tree in another directory just works and a stale key
+//         from a different build tree is never picked up silently.  The DLL's
+//         own path, not the executable's: a COM server is loaded by whatever
+//         host CoCreates it, and keys that followed the host would be a
+//         different identity per host
+//       : Created if absent, ONE level.  A deeper path handed to
+//         SetSecurityDir must already exist -- CreateDirectory does not build
+//         intermediates, and quietly making a tree of directories for a
+//         mistyped path is worse than the refusal
+//       : Caller MUST hold m_oCSection
+//
+HRESULT
+FacadeNetwork::EnsureSecurityDirLocked ( CString& rcsDir )
+{
+    if ( m_csSecDir.IsEmpty ( ) )
+    {
+      HMODULE hMod = 0;
+      if ( !::GetModuleHandleExW ( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                 | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT
+                                 , (LPCWSTR)&P2PF_CreateNetwork, &hMod ) || !hMod )
+      {
+        RaiseSecurityError ( L"TargetFacade: the module holding the facade could "
+                             L"not be identified, so the security directory could "
+                             L"not be resolved. Name one with SetSecurityDir." );
+        return p2pf::P2PF_E_SECURITY;
+      }
+
+      wchar_t wszPath [ MAX_PATH + 1 ] = { 0 };
+      const DWORD n = ::GetModuleFileNameW ( hMod, wszPath, MAX_PATH );
+      if ( n == 0 || n > MAX_PATH )
+      {
+        RaiseSecurityError ( L"TargetFacade: the facade module's own path could not "
+                             L"be read, so the security directory could not be "
+                             L"resolved. Name one with SetSecurityDir." );
+        return p2pf::P2PF_E_SECURITY;
+      }
+
+      CString csDir ( wszPath );
+      const int iSlash = csDir.ReverseFind ( L'\\' );
+      if ( iSlash < 0 )
+      {
+        RaiseSecurityError ( L"TargetFacade: the facade module's path has no "
+                             L"directory. Name one with SetSecurityDir." );
+        return p2pf::P2PF_E_SECURITY;
+      }
+      csDir = csDir.Left ( iSlash + 1 ) + L"p2p\\";
+
+      if ( !::CreateDirectoryW ( (LPCWSTR)csDir, 0 ) &&
+           ::GetLastError ( ) != ERROR_ALREADY_EXISTS )
+      {
+        CString csWhy;
+        csWhy.Format ( L"TargetFacade: the security directory %s could not be "
+                       L"created (Win32 %lu). Name a writable one with "
+                       L"SetSecurityDir."
+                     , (LPCWSTR)csDir, ::GetLastError ( ) );
+        RaiseSecurityError ( csWhy );
+        return p2pf::P2PF_E_SECURITY;
+      }
+      m_csSecDir = csDir;
+    }
+
+    rcsDir     = m_csSecDir;
+    m_bSecUsed = TRUE;          // the directory can no longer move
+    return S_OK;
+}
+
+//
+//  The directory AND the revocation list, for a caller that holds no lock
+//  NOTES: The pair, and not two calls, because naming a revocation list a hub
+//         cannot load is worse than naming none: a configured list that will
+//         not load fails CLOSED and refuses every peer.  Whoever asks where
+//         the keys go is about to provision a hub, and that hub will not arm
+//         without this file
+//       : Takes m_oCSection ITSELF, which is what makes it the entry point for
+//         CreateHubEx and for the arming verbs on a hub -- neither of which
+//         holds it.  Link, which does hold it, calls the Locked pair directly
+//
+HRESULT
+FacadeNetwork::SecurityPaths ( CString& rcsDir, CString& rcsRevoke )
+{
+    CSingleLock oLock ( &m_oCSection, TRUE );
+
+    HRESULT hr = EnsureSecurityDirLocked ( rcsDir );
+    if ( FAILED(hr) )
+      return hr;
+
+    rcsRevoke = rcsDir + L"peers.revoked";
+    if ( !EnsureRevocationList ( rcsRevoke ) )
+    {
+      CString csWhy;
+      csWhy.Format ( L"TargetFacade: the revocation list %s could not be created, "
+                     L"and a hub that requires authentication will not arm without "
+                     L"one."
+                   , (LPCWSTR)rcsRevoke );
+      RaiseSecurityError ( csWhy );
+      return p2pf::P2PF_E_SECURITY;
+    }
+    return S_OK;
+}
+
+//
+//  Make sure the shared revocation list EXISTS
+//  NOTES: A revocation POSITION, not a feature.  A hub that requires
+//         authentication and has never named a list refuses to arm, and there
+//         are exactly two honest answers to that: name one, or say the absence
+//         is deliberate.  This takes the first, because the second is only
+//         right for a closed tree and a facade cannot know that it is in one
+//       : An all-comments file is the honest "nothing revoked yet" and loads
+//         cleanly.  What it is NOT is optional afterwards: once configured, a
+//         load that fails -- deleted, unreadable, one bad line -- does not
+//         fall back on "nothing is revoked".  It FAILS CLOSED, every
+//         verification answers revoked, and the hub will not arm
+//       : ONE FILE FOR THE WHOLE PROCESS.  Revoking a key is an operator
+//         editing this file plus a restart, and a per-hub file would mean
+//         doing it once per hub and getting it wrong once per hub
+//
+BOOL
+FacadeNetwork::EnsureRevocationList ( const CString& csPath )
+{
+    if ( ::GetFileAttributesW ( (LPCWSTR)csPath ) != INVALID_FILE_ATTRIBUTES )
+      return TRUE;
+
+    FILE *pf = 0;
+    if ( ::_wfopen_s ( &pf, (LPCWSTR)csPath, L"wb" ) != 0 || !pf )
+      return FALSE;
+
+    ::fputs ( "# TargetFacade revocation list, shared by every secure hub of this\n"
+              "# process. Written once, by the first one created; never rewritten.\n"
+              "#\n"
+              "# One revoked PUBLIC POINT per line, 128 hex characters -- the same\n"
+              "# column the allow-lists carry -- with an optional epoch:\n"
+              "#\n"
+              "#     <128 hex point> [<epoch seconds>]   # why\n"
+              "#\n"
+              "# One file covers identity AND agreement points: both are 64 raw\n"
+              "# bytes, and with two files an operator can revoke a compromised\n"
+              "# peer for login and forget sealing. Revocation is absolute -- the\n"
+              "# epoch column records WHEN, for the operator, and is never compared\n"
+              "# against the clock. There is no removal API; un-revoking is\n"
+              "# deleting a line by hand, which is deliberate friction.\n"
+              "#\n"
+              "# THIS FILE FAILS CLOSED. Once it is named, a load that fails -- it\n"
+              "# is gone, it is unreadable, one line does not parse -- refuses\n"
+              "# EVERY peer rather than allowing every peer.\n"
+              "#\n"
+              "# Nothing revoked yet.\n"
+            , pf );
+    ::fclose ( pf );
+    return TRUE;
+}
+
+//
+//  One sentence about a security refusal, onto the diagnostic stream
+//  NOTES: P2PF_E_SECURITY is one code over a family of file problems -- a key
+//         that will not load, an allow-list that will not write, a revocation
+//         list that will not parse, a peer whose published point is not there
+//         -- and a code with no sentence sends an operator through a directory
+//         by hand.  The kernel's own arming refusal names the file for exactly
+//         this reason; so does this
+//       : ERROR class, because every one of these is one
+//       : PUBLIC, and FacadeHub raises them through it.  The diagnostic slot is
+//         the PROCESS'S and this object is what holds it, so a hub that has a
+//         sentence to say says it here rather than reaching for a singleton
+//
+void
+FacadeNetwork::RaiseSecurityError ( const wchar_t *what )
+{
+    if ( what && *what )
+      RaiseDiag ( p2pf::P2PF_DIAG_ERROR, L"TargetFacade", what );
+}
+
+//
+//  Hand each hub of one edge the other's public points, and enforce
+//  NOTES: THE ONE STEP ONLY THIS OBJECT CAN TAKE.  Across two machines this is
+//         two published files and an operator; across one process it is a
+//         memcpy of two public points, because the network is the only object
+//         that holds both hubs.  Everything else about a secure hub happened
+//         when it was created
+//       : NOTHING IS ARMED HERE.  It either returns S_OK -- at which point each
+//         hub holds the other in its allow-list, requires authentication, and
+//         has said it can honour that -- or it returns P2PF_E_SECURITY having
+//         armed no connection at all
+//       : NOR IS ANYTHING LEFT HALF DONE.  If the second hub refuses, the first
+//         one's new peer is withdrawn: TrustAndEnforce puts the allow-list back
+//         and, for a hub that had no peer yet, the enforcement flag with it, so
+//         a failed Link leaves two hubs exactly as it found them
+//       : IDEMPOTENT AND INCREMENTAL.  A hub that already trusts other peers
+//         keeps them -- the new peer is added to the set and the file rewritten
+//         from it -- and a hub already provisioned is not re-keyed
+//       : Caller MUST hold m_oCSection
+//
+HRESULT
+FacadeNetwork::SecureEdgeLocked ( FacadeHub *pA, FacadeHub *pB )
+{
+    CString csDir, csRevoke;
+    HRESULT hr = EnsureSecurityDirLocked ( csDir );
+    if ( FAILED(hr) )
+      return hr;
+
+    FacadeHub *const aHub[2] = { pA, pB };
+
+    // Both were provisioned at creation; a hub that is not holds no keys to
+    // trade, and saying so beats writing an allow-list nothing can verify.
+    for ( int i = 0; i < 2; ++i )
+      if ( !aHub[i]->IsProvisioned ( ) )
+      {
+        CString csWhy;
+        csWhy.Format ( L"TargetFacade: hub '%s' is secure but holds no key "
+                       L"material, so it cannot be linked. Nothing was armed."
+                     , aHub[i]->Address ( ) );
+        RaiseSecurityError ( csWhy );
+        return p2pf::P2PF_E_SECURITY;
+      }
+
+    // Whether the first hub ALREADY trusted the second before this call, which
+    // decides what the unwind below may take away. Trust is not a connection:
+    // Disconnect leaves the allow-list entry behind, so a re-Link to a peer
+    // that was dropped arrives here with the entry already present, and
+    // withdrawing it would remove something this call never granted.
+    const BOOL bAlreadyTrusted = pA->Trusts ( pB->Address ( ) );
+
+    for ( int i = 0; i < 2; ++i )
+    {
+      FacadeHub *pSelf = aHub[i], *pPeer = aHub[1-i];
+      CString csWhat;
+      const HRESULT hrTrust = pSelf->TrustAndEnforce ( pPeer->Address ( )
+                                                     , pPeer->Keys ( )
+                                                     , csDir, csWhat );
+      if ( SUCCEEDED(hrTrust) )
+        continue;
+
+      // Withdraw what the FIRST pass through this loop GRANTED, so a refusal
+      // on the second hub leaves neither of them changed -- and nothing else.
+      if ( i == 1 && !bAlreadyTrusted )
+      {
+        CString csIgnored;
+        aHub[0]->UntrustPeer ( aHub[1]->Address ( ), csDir, csIgnored );
+      }
+
+      CString csWhy;
+      csWhy.Format ( L"TargetFacade: %s Nothing was armed.", (LPCWSTR)csWhat );
+      RaiseSecurityError ( csWhy );
+      return p2pf::P2PF_E_SECURITY;
+    }
+    return S_OK;
+}
+
+//
+//  Where secure hubs keep their key material
+//  NOTES: BEFORE the first secure hub and not after.  Once a hub has been
+//         provisioned it holds a key loaded from the directory that was in
+//         force, and a call that appeared to move it but did not would be
+//         worse than a refusal -- the identity would still be the old one and
+//         nothing would say so
+//       : NULL or empty restores the DEFAULT rather than clearing it to
+//         nothing.  "" already means "work it out for me" everywhere else in
+//         this ABI
+//
+HRESULT
+FacadeNetwork::SetSecurityDir ( const wchar_t *dir )
+{
+    AFX_MANAGE_STATE ( AfxGetStaticModuleState() );
+
+    CSingleLock oLock ( &m_oCSection, TRUE );
+
+    if ( m_bSecUsed )
+    {
+      RaiseSecurityError ( L"TargetFacade: the security directory cannot be changed "
+                           L"once a hub has been provisioned out of it -- that hub "
+                           L"holds a key loaded from the old one. Set it before the "
+                           L"first hub created with P2PF_HUB_SECURE." );
+      return p2pf::P2PF_E_SECURITY;
+    }
+
+    if ( !dir || !*dir )
+    {
+      m_csSecDir.Empty ( );          // back to "beside the module"
+      return S_OK;
+    }
+
+    CString csDir ( dir );
+    const wchar_t chLast = csDir [ csDir.GetLength ( ) - 1 ];
+    if ( chLast != L'\\' && chLast != L'/' )
+      csDir += L'\\';
+
+    if ( !::CreateDirectoryW ( (LPCWSTR)csDir, 0 ) &&
+         ::GetLastError ( ) != ERROR_ALREADY_EXISTS )
+    {
+      CString csWhy;
+      csWhy.Format ( L"TargetFacade: the security directory %s could not be created "
+                     L"(Win32 %lu). Intermediate directories are not created for you."
+                   , (LPCWSTR)csDir, ::GetLastError ( ) );
+      RaiseSecurityError ( csWhy );
+      return p2pf::P2PF_E_SECURITY;
+    }
+
+    m_csSecDir = csDir;
+    return S_OK;
 }
 
 ///////////////////////////////////////////////////////////////////////
