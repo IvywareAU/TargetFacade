@@ -12,9 +12,9 @@
   </ItemGroup>
 
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{5D8C2E64-71B9-4A3F-8C15-2E7A9B4D6F08}</ProjectGuid>
-    <ProjectName>WildcardListenTest</ProjectName>
-    <RootNamespace>WildcardListenTest</RootNamespace>
+    <ProjectGuid>{2B6E1D93-5A47-4C88-B1E0-9F3A7C4D5E62}</ProjectGuid>
+    <ProjectName>FacadeSmokeTest</ProjectName>
+    <RootNamespace>FacadeSmokeTest</RootNamespace>
     <Keyword>Win32Proj</Keyword>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
@@ -25,13 +25,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -43,17 +43,17 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
 
-  <!-- Shared solution output root; see TargetFacade(2022).vcxproj for the why. -->
+  <!-- Shared solution output root; see TargetFacade(2026).vcxproj for the why. -->
   <PropertyGroup>
     <OutDir>$(MSBuildThisFileDirectory)..\..\out\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(MSBuildThisFileDirectory)..\..\out\$(Platform)\$(Configuration)\obj\$(ProjectName)\</IntDir>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <TargetName>WildcardListenTest</TargetName>
+    <TargetName>FacadeSmokeTest</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TargetName>WildcardListenTest</TargetName>
+    <TargetName>FacadeSmokeTest</TargetName>
   </PropertyGroup>
 
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -93,7 +93,7 @@
   </ItemDefinitionGroup>
 
   <ItemGroup>
-    <ClCompile Include="WildcardListenTest.cpp" />
+    <ClCompile Include="FacadeSmokeTest.cpp" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

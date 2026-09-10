@@ -93,7 +93,7 @@
 //
 //     onTimer  (pump)  --SetEvent-->  sweep (main thread)  --post()-->  (pump)
 //
-// Build: part of TargetFacade(2022).sln. Includes only the facade's public
+// Build: part of TargetFacade(2026).sln. Includes only the facade's public
 // headers -- no MFC, no TargetCore, no WinSock.
 //
 // Exit code 0 = the run did what this file says it does.

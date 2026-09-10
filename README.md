@@ -1660,7 +1660,7 @@ make it possible — that constraint is why the header looks the way it does.
 ### Building, registering, testing
 
 ```
-msbuild "TargetFacade(2022).sln" -p:Configuration=Debug -p:Platform=x64   # all five projects
+msbuild "TargetFacade(2026).sln" -p:Configuration=Debug -p:Platform=x64   # all five projects
 cd com\test && .\run_com_smoke.ps1                 # stage + register per-user + run + unregister
 .\run_com_smoke.ps1 -Config Release
 ```
@@ -1843,7 +1843,7 @@ There is no package manager here — no vcpkg, no conan, no CMake. It is MSBuild
 plus two prebuilt sibling import libs, and the interesting property of the list
 below is how **little** of it a client inherits.
 
-### The DLL — `TargetFacade(2022).vcxproj`
+### The DLL — `TargetFacade(2026).vcxproj`
 
 | dependency | kind | where it comes from |
 |---|---|---|
@@ -1882,7 +1882,7 @@ into **Msgcore**, even though TargetCore holds files called
 not reachable by their `#include` spelling, so they are never what gets
 compiled here. Only `comutil.h` and `wtypes.h` fall through to the SDK.
 
-Toolset is **v143** (VS 2022), Unicode, `/MD(d)`, four configurations:
+Toolset is **v145** (VS 2026), Unicode, `/MD(d)`, four configurations:
 Debug|Release × x64|Win32.
 
 ### What a client depends on — deliberately almost nothing
@@ -1901,7 +1901,7 @@ the solution stops compiling the moment the facade leaks one of its internals.
 | `test\WildcardListenTest` | `TargetFacade.lib` | `..\..\include` |
 | `examples\HubWatchdog` | `TargetFacade.lib` | `..\..\include` |
 
-### The COM layer — `com\TargetCom(2022).vcxproj`
+### The COM layer — `com\TargetCom(2026).vcxproj`
 
 | dependency | kind |
 |---|---|
@@ -1931,10 +1931,10 @@ and `Msgcore.dll`.
 
 ## Building
 
-Open `TargetFacade(2022).sln` (Debug|x64 / Release|x64), or:
+Open `TargetFacade(2026).sln` (Debug|x64 / Release|x64), or:
 
 ```
-msbuild "TargetFacade(2022).vcxproj" -p:Configuration=Debug -p:Platform=x64
+msbuild "TargetFacade(2026).vcxproj" -p:Configuration=Debug -p:Platform=x64
 ```
 
 Links against `..\lib\Msgcore.lib` + `TargetCore.lib` (Release:

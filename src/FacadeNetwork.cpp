@@ -312,7 +312,7 @@ FacadeNetwork::Release ( )
 const wchar_t*
 FacadeNetwork::VersionString ( ) const
 {
-    return L"TargetFacade ABI 11 / TargetCore(2022)";
+    return L"TargetFacade ABI 11 / TargetCore(2026)";
 }
 
 ///////////////////////////////////////////////////////////////////////

@@ -27,13 +27,13 @@ terms and carry their own notices, which must not be removed:
     com/Targetver.h                    MFC sample source.
                                        Copyright (C) Microsoft Corporation.
     com/P2PNetwork.rgs                 ATL registrar script, wizard-generated.
-    TargetFacade(2022).sln             Visual Studio solution file.
-    TargetFacade(2022).vcxproj         Visual Studio project files.
-    com/TargetCom(2022).vcxproj
-    com/test/ComSmokeTest(2022).vcxproj
-    examples/HubWatchdog/HubWatchdog(2022).vcxproj
-    test/FacadeSmokeTest/FacadeSmokeTest(2022).vcxproj
-    test/WildcardListenTest/WildcardListenTest(2022).vcxproj
+    TargetFacade(2026).sln             Visual Studio solution file.
+    TargetFacade(2026).vcxproj         Visual Studio project files.
+    com/TargetCom(2026).vcxproj
+    com/test/ComSmokeTest(2026).vcxproj
+    examples/HubWatchdog/HubWatchdog(2026).vcxproj
+    test/FacadeSmokeTest/FacadeSmokeTest(2026).vcxproj
+    test/WildcardListenTest/WildcardListenTest(2026).vcxproj
 
 Targetver.h additionally carries Microsoft's Fluent UI referential-material
 notice; licence terms for the Fluent UI are available separately from
@@ -44,7 +44,7 @@ com/TargetCom.rc began as project-template or wizard-generated files but have
 been rewritten to the point that nothing of the template remains; they carry
 the Apache header in full and ARE covered by the Apache License, Version 2.0.
 
-TargetFacade(2022).vcxproj.user is per-user IDE state and is excluded by
+TargetFacade(2026).vcxproj.user is per-user IDE state and is excluded by
 .gitignore, so no clone contains it and it needs no exception here.
 
 
