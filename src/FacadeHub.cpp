@@ -484,7 +484,7 @@ class RetryDialDmx : public FacadeConDmx
 // and so travel on down the base-map chain to the P2PeerHub defaults.
 // ---------------------------------------------------------------------------
 BEGIN_P2PeerMsg_MAP(FacadeHub, P2PeerHub)
-    ON_P2PeerMsg(_N("*"), &FacadeHub::On_AnyTopic)
+    ON_P2PeerMsg(L"*", &FacadeHub::On_AnyTopic)
 END_P2PeerMsg_MAP()
 
 ///////////////////////////////////////////////////////////////////////
