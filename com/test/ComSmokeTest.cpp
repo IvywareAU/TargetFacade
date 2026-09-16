@@ -22,7 +22,7 @@
 // queue, so every wait below pumps messages.  If the marshalling were wrong,
 // the event checks would simply never fire.
 //
-// It includes NO facade header and NO TargetCore header: the only contract it
+// It includes NO facade header and NO Targetcore header: the only contract it
 // knows is the type library, exactly like a VB/.NET/script client.
 //
 // It is also the one place both call paths exist side by side, which makes it

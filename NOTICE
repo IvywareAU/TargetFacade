@@ -9,8 +9,8 @@ Licensed under the Apache License, Version 2.0. See the LICENSE file in
 this directory, or http://www.apache.org/licenses/LICENSE-2.0
 
 This repository holds two things: TargetFacade.dll, a macro-free facade over
-TargetCore.dll's peer-to-peer messaging kernel, and TargetCom.dll (in com\),
-an ATL in-proc COM server built on that facade. TargetCore and Msgcore are
+Targetcore.dll's peer-to-peer messaging kernel, and TargetCom.dll (in com\),
+an ATL in-proc COM server built on that facade. Targetcore and Msgcore are
 separate repositories under the same licence and are NOT bundled here.
 
 
@@ -58,7 +58,7 @@ separately and are NOT distributed under the Apache License, Version 2.0:
     Microsoft Foundation Classes (MFC)  - Microsoft, licensed separately.
                                           TargetFacade.dll is built against
                                           the shared MFC runtime (UseOfMfc =
-                                          Dynamic) because TargetCore and
+                                          Dynamic) because Targetcore and
                                           Msgcore are MFC extension DLLs.
     Active Template Library (ATL)       - Microsoft, licensed separately.
                                           TargetCom links ATL statically
@@ -79,7 +79,7 @@ included in this repository.
 Sibling components required at build or run time
 -------------------------------------------------------------------------
 
-    TargetCore.dll / TargetCore.lib     Khrustal & Mann, Apache License,
+    Targetcore.dll / Targetcore.lib     Khrustal & Mann, Apache License,
     Msgcore.dll / Msgcore.lib           Version 2.0, in their own
                                         repositories. Not bundled here;
                                         TargetFacade.dll does not run without

@@ -16,11 +16,11 @@
 // TargetFacade.h
 //
 // The ONE public header of TargetFacade.dll -- a minimal, macro-free facade
-// over TargetCore.dll.
+// over Targetcore.dll.
 //
 // Design rules (all deliberate, do not "improve" them away):
 //
-//  * NOTHING from TargetCore leaks through here: no P2PeerHub, no P2PeerCon,
+//  * NOTHING from Targetcore leaks through here: no P2PeerHub, no P2PeerCon,
 //    no P2PeerMsg, no MFC, no BEGIN_*_MAP macros.  A client includes only
 //    this header and links only TargetFacade.lib.
 //
@@ -134,7 +134,7 @@ namespace p2pf {
 // new client-implemented interface, IP2PDiagEvents: THE KERNEL'S OWN DIAGNOSTIC
 // STREAM (see "Diagnostics" below).  Until now a client got one prose sentence
 // through OnError and a code through OnEvent, both of them about ONE HUB and
-// both of them raised by the facade; underneath, TargetCore has been narrating
+// both of them raised by the facade; underneath, Targetcore has been narrating
 // everything it does -- errors, warnings, traces, its own log lines -- to a
 // callback slot no facade client could reach.  SetDiagSink takes that slot with
 // a severity mask, RaiseDiag writes into it, and the two together are what a log
@@ -148,7 +148,7 @@ namespace p2pf {
 // ABI 11 APPENDS ONE METHOD TO IP2PNetwork AND ONE TO IP2PHub, adds no new
 // interface at all, and adds one bit to the flags word CreateHubEx already
 // takes: P2PF_HUB_SECURE -- A SECURE HUB (see "Security" below).  Underneath,
-// TargetCore has carried a signed login, a per-connection session cypher, an
+// Targetcore has carried a signed login, a per-connection session cypher, an
 // allow-list, a revocation list and an arming gate for some time, and none of
 // it was reachable from here: the facade has been spawning every hub with the
 // enforcement switches turned OFF, which is the library's own documented
@@ -156,7 +156,7 @@ namespace p2pf {
 // as the DEFAULT for a hub created without the flag.
 //
 // THE FLAG IS ON THE HUB BECAUSE THE SETTING IS ON THE HUB.  Enforcement in
-// TargetCore is hub-wide and there is no per-connection override, so "is this
+// Targetcore is hub-wide and there is no per-connection override, so "is this
 // link authenticated" was never a question one link could answer: a hub either
 // demands a signed login from everything that reaches it or from nothing.
 // Saying it once, when the hub is made and before it can have a connection at
@@ -464,7 +464,7 @@ const unsigned int P2PF_PUMP_THIS_THREAD   = 0x0002; // the caller owns it
 // ---------------------------------------------------------------------------
 // Diagnostics                                                        (ABI 10)
 //
-// TargetCore narrates itself.  Every refused login, dropped connection,
+// Targetcore narrates itself.  Every refused login, dropped connection,
 // unroutable message, oversize frame and internal assumption it checks raises a
 // P2Pevent -- an object with a SEVERITY, a serial number, the function that
 // raised it, a sentence, often an advice line and sometimes an HRESULT.  Until
@@ -526,7 +526,7 @@ const unsigned int P2PF_DIAG_TRACE    = 5;
 const unsigned int P2PF_DIAG_LOG      = 6;
 const unsigned int P2PF_DIAG_REPORT   = 7;
 // The client's own class.  RaiseDiag accepts any of the above too, but this one
-// is the kernel's reserved "not mine" class: nothing in TargetCore ever raises
+// is the kernel's reserved "not mine" class: nothing in Targetcore ever raises
 // it, so a mask of P2PF_DIAGM_APP hears your application and nothing else.
 const unsigned int P2PF_DIAG_APP      = 16;
 
@@ -1080,7 +1080,7 @@ struct IP2PHub
     // -----------------------------------------------------------------------
     // Reaching past the messaging slice                              (ABI 6)
     //
-    // Everything above this line is one subsystem of TargetCore: a hub, its
+    // Everything above this line is one subsystem of Targetcore: a hub, its
     // connections, and traffic between them.  These ten are the cheapest of
     // what was left out -- see missing.md, which is the audit they came from.
     // Every one of them is scalars and strings, so nothing here bends the two
@@ -1201,7 +1201,7 @@ struct IP2PHub
     // THE ESCAPE HATCH.  Hands back the P2PeerHub this IP2PHub is a face for.
     //
     // Read the rest of this comment before using it.  Everything else in this
-    // header exists so that a client needs neither TargetCore's headers nor
+    // header exists so that a client needs neither Targetcore's headers nor
     // MFC nor a matching toolset; the moment you cast this pointer you have
     // all three of those requirements back, plus the kernel's own rules about
     // which thread may touch what.  Nothing you do through it is covered by
@@ -1215,7 +1215,7 @@ struct IP2PHub
     // feature.  This turns "impossible" into "your problem", which is the
     // honest trade and the one this layer should be making.
     //
-    // Cast to P2PeerHub* (include P2PeerHub.h, link TargetCore.lib).  Valid
+    // Cast to P2PeerHub* (include P2PeerHub.h, link Targetcore.lib).  Valid
     // only until Close().
     virtual HRESULT GetNative     ( void **outNativeHub ) const = 0;
 
@@ -1433,7 +1433,7 @@ struct IP2PHub
     // cannot authenticate.  A hub created without it is exactly the hub every
     // ABI up to 10 shipped: it signs nothing and verifies nothing.  There is
     // no third state and no way to change the answer afterwards, because
-    // enforcement in TargetCore is hub-wide with no per-connection override:
+    // enforcement in Targetcore is hub-wide with no per-connection override:
     // a hub that could be secured later would be one whose existing links
     // silently changed terms, and a hub that could be relaxed later would be
     // one whose secure links silently opened.
@@ -1499,7 +1499,7 @@ struct IP2PHub
     // gate is re-run and the connection is armed only if the hub passes it.
     // A secure hub with no peers has nothing to enforce and nothing exposed.
     //
-    // WHAT IT DELIBERATELY DOES NOT TURN ON.  TargetCore also defaults to
+    // WHAT IT DELIBERATELY DOES NOT TURN ON.  Targetcore also defaults to
     // requiring an END-TO-END SEAL on a body that will cross an intermediate
     // hub, and an ORIGIN ATTESTATION on a message arriving down an ancestor
     // link.  Both are properties of an ORIGIN AND A DESTINATION; this flag
@@ -1569,7 +1569,7 @@ struct IP2PNetwork
     // shut down (CleanupP2Pmsg + WSACleanup).
     virtual ULONG   Release   ( ) = 0;
 
-    // Facade + kernel build tag, for logs ("TargetFacade 2 / TargetCore ...").
+    // Facade + kernel build tag, for logs ("TargetFacade 2 / Targetcore ...").
     virtual const wchar_t* VersionString ( ) const = 0;
 
     // --- linking -----------------------------------------------------------

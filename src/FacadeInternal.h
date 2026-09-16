@@ -19,7 +19,7 @@
 // (FacadeHub.h) is the P2PeerHub subclass behind IP2PHub.
 //
 // ---------------------------------------------------------------------------
-// IMPLEMENTATION MAP (facade -> TargetCore)
+// IMPLEMENTATION MAP (facade -> Targetcore)
 // ---------------------------------------------------------------------------
 //  P2PF_CreateNetwork          -> StartupP2Pmsg(16) + WSAStartup(2.2)
 //  IP2PNetwork::Release (last) -> per-hub Close, CleanupP2Pmsg, WSACleanup

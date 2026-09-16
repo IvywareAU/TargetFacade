@@ -15,7 +15,7 @@
 //
 // stdafx.h : standard precompiled header for TargetFacade (regular MFC DLL)
 //
-// TargetCore is MFC-based, so the facade DLL uses MFC dynamically -- but the
+// Targetcore is MFC-based, so the facade DLL uses MFC dynamically -- but the
 // PUBLIC header (include\TargetFacade.h) stays MFC-free: everything here is
 // internal to the DLL.
 #pragma once
@@ -50,7 +50,7 @@
 #include <string>
 #include <utility>
 
-// TargetCore -- the wrapped kernel (internal use only; never re-exported)
+// Targetcore -- the wrapped kernel (internal use only; never re-exported)
 #include "P2Pwin32.h"
 #include "P2PeerHub.h"
 #include "P2PeerConWsa.h"

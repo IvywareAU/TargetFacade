@@ -904,7 +904,7 @@ class Hub
     }
 
     // The escape hatch: the P2PeerHub behind this hub. Cast it and you need
-    // TargetCore's headers, its lib, MFC and its threading rules -- see
+    // Targetcore's headers, its lib, MFC and its threading rules -- see
     // IP2PHub::GetNative. nullptr when the hub is closed.
     void* native ( ) const
     {

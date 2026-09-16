@@ -15,7 +15,7 @@
 //
 // FacadeHub.h -- the private P2PeerHub subclass behind p2pf::IP2PHub.
 //
-// This is the ONE place in the product where TargetCore's message-map macros
+// This is the ONE place in the product where Targetcore's message-map macros
 // live: a single wildcard entry (`"*"` -> On_AnyTopic). Clients get plain
 // virtuals / std::function handlers instead, which is the whole point of the
 // facade.

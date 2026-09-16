@@ -168,7 +168,7 @@ IsNoBounce ( P2PeerMsg *pMsg )
 //
 // READ THE RIGHT HEADER. There are two P2Pmsg headers in this tree and the
 // interesting one is not the one that compiles: `#include "P2Pmsg.h"` resolves
-// to ..\Msgcore\P2Pmsg.h, NOT to ..\TargetCore\P2Pmsg(2Msgcore).h. In the file
+// to ..\Msgcore\P2Pmsg.h, NOT to ..\Targetcore\P2Pmsg(2Msgcore).h. In the file
 // that actually builds, class P3PmsgNode -- the whole thing, ~130 lines,
 // AddNode/DeclareNode/SelectNode/GetCount/r_Curs -- IS COMMENTED OUT, and
 // `typedef P3PmsgField P3PmsgItem` is what remains. So the tree is items with
@@ -253,7 +253,7 @@ const int kPingDrainSlices = 40;   // 1 s at kDrainSliceMillisecs
 //     [UINT16 magic][UINT16 topicChars][topic UTF-16, no NUL][payload bytes]
 //
 // A body that does not carry the magic is treated as an unframed broadcast
-// from a non-facade peer (the plain-text form the TargetCore samples send):
+// from a non-facade peer (the plain-text form the Targetcore samples send):
 // it is delivered whole, under the kernel message name.
 // ---------------------------------------------------------------------------
 #pragma pack(push,1)
@@ -527,7 +527,7 @@ FacadeHub::~FacadeHub ( )
 //         P2PeerHub::CreateHub both call AuthArmOrRefuse before they start
 //         anything, and a hub that requires authentication and holds no
 //         identity does not start at all
-//       : TargetCore requires authentication by default and requires sealing
+//       : Targetcore requires authentication by default and requires sealing
 //         by default.  A facade hub is created from an address and a sink and
 //         nothing else -- there is no argument on CreateHub through which a
 //         key, an allow-list or a revocation list could arrive -- so every hub
@@ -3154,7 +3154,7 @@ FacadeHub::ReportDeclined ( P2PeerMsg *pMsg )
 //  NOTES: THE BOUNCE HAS ALWAYS COME BACK ON A DIFFERENT MESSAGE than the one
 //         this facade was watching for.  P2PF_EVT_ROUTING_ERROR was raised
 //         from On_P2PeerError, which the kernel dispatches for P2Pmsg_Error --
-//         and nothing in TargetCore posts one: the only factory that did is
+//         and nothing in Targetcore posts one: the only factory that did is
 //         commented out (P2PeerMsg.cpp:660-676).  What the kernel actually
 //         sends back, from RouteP2PeerMsg for an undeliverable message and
 //         from NotHandled for one nobody handled, is a P2Pmsg_EXCEPTION.  It
@@ -3940,7 +3940,7 @@ FacadeHub::On_PITimer ( bool bCancel, PITimerID nTimerID, DWORD dwUserKey )
 //         answers to the pattern and only the clone answers to the claimed
 //         name -- which is why it took a named listener to surface it
 //       : Choosing needs the whole list, which is why EnumP2PmsgCon is now
-//         exported from TargetCore (P2Pwin32.h).  ConQuery cannot express it:
+//         exported from Targetcore (P2Pwin32.h).  ConQuery cannot express it:
 //         it has no notion of a better match
 //       : The hub's own m_oCSectionHub is held across the walk, exactly as
 //         ConQuery does it, and the SafeP2PeerCon assignment (which AddRefs)

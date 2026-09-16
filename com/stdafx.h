@@ -15,7 +15,7 @@
 //
 // stdafx.h : precompiled header for TargetCom (ATL in-proc COM server)
 //
-// This DLL is pure ATL -- NO MFC, no TargetCore, no WinSock.  It sees the
+// This DLL is pure ATL -- NO MFC, no Targetcore, no WinSock.  It sees the
 // wrapped kernel only through the facade's public header, exactly like any
 // other client, which is the point: if TargetCom compiles, the facade is not
 // leaking its internals.
@@ -41,5 +41,5 @@
 #include <map>
 #include <vector>
 
-// The facade's public header -- the ONLY view TargetCom has of TargetCore.
+// The facade's public header -- the ONLY view TargetCom has of Targetcore.
 #include "TargetFacade.h"

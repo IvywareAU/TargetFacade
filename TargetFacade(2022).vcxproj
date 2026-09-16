@@ -94,7 +94,7 @@
 
        Anchored on $(MSBuildThisFileDirectory), not $(SolutionDir): the path must
        not depend on which solution drives the build. Relying on the MSBuild
-       defaults is what left TargetCore with intermediates and binaries in
+       defaults is what left Targetcore with intermediates and binaries in
        different trees (see its 0cc271a). -->
   <PropertyGroup>
     <OutDir>$(MSBuildThisFileDirectory)out\$(Platform)\$(Configuration)\</OutDir>
@@ -127,7 +127,7 @@
   <ItemDefinitionGroup>
     <PostBuildEvent>
       <Command>xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitecture)\Msgcore.dll" "$(OutDir)"
-xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitecture)\TargetCore.dll" "$(OutDir)"</Command>
+xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitecture)\Targetcore.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
 
@@ -143,7 +143,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
       <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>include;src;..\Msgcore;..\TargetCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;src;..\Msgcore;..\Targetcore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <SDLCheck>false</SDLCheck>
     </ClCompile>
@@ -152,7 +152,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(OutDir)$(TargetName).pdb</ProgramDatabaseFile>
       <ImportLibrary>$(OutDir)$(TargetName).lib</ImportLibrary>
-      <AdditionalDependencies>Msgcore.lib;TargetCore.lib;MsWsock.lib;ws2_32.lib;comsuppwd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Msgcore.lib;Targetcore.lib;MsWsock.lib;ws2_32.lib;comsuppwd.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\lib\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
     </Link>
@@ -171,7 +171,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
       <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>include;src;..\Msgcore;..\TargetCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;src;..\Msgcore;..\Targetcore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
@@ -180,7 +180,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <ImportLibrary>$(OutDir)$(TargetName).lib</ImportLibrary>
-      <AdditionalDependencies>Msgcore.lib;TargetCore.lib;MsWsock.lib;ws2_32.lib;comsuppw.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Msgcore.lib;Targetcore.lib;MsWsock.lib;ws2_32.lib;comsuppw.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\lib\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
     </Link>
@@ -189,7 +189,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
   <!-- ===== Debug | Win32 =====
        Same as Debug|x64, except the kernel import libraries come from the
        32-bit set in ..\lib\Win32\Debug (Directory.Build.props puts the Msgcore /
-       TargetCore build's own import libs there, keyed by platform AND
+       Targetcore build's own import libs there, keyed by platform AND
        configuration, since Debug and Release .lib names are identical). -->
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -202,7 +202,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
       <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>include;src;..\Msgcore;..\TargetCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;src;..\Msgcore;..\Targetcore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <SDLCheck>false</SDLCheck>
     </ClCompile>
@@ -211,7 +211,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(OutDir)$(TargetName).pdb</ProgramDatabaseFile>
       <ImportLibrary>$(OutDir)$(TargetName).lib</ImportLibrary>
-      <AdditionalDependencies>Msgcore.lib;TargetCore.lib;MsWsock.lib;ws2_32.lib;comsuppwd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Msgcore.lib;Targetcore.lib;MsWsock.lib;ws2_32.lib;comsuppwd.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\lib\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
     </Link>
@@ -230,7 +230,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
       <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <AdditionalIncludeDirectories>include;src;..\Msgcore;..\TargetCore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;src;..\Msgcore;..\Targetcore;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
@@ -239,7 +239,7 @@ xcopy /Y "$(MSBuildThisFileDirectory)..\bin\$(Configuration)$(PlatformArchitectu
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <ImportLibrary>$(OutDir)$(TargetName).lib</ImportLibrary>
-      <AdditionalDependencies>Msgcore.lib;TargetCore.lib;MsWsock.lib;ws2_32.lib;comsuppw.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Msgcore.lib;Targetcore.lib;MsWsock.lib;ws2_32.lib;comsuppw.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\lib\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
     </Link>

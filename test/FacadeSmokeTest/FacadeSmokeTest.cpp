@@ -17,7 +17,7 @@
 //
 // End-to-end proof that TargetFacade.dll works AND that it really isolates:
 // this translation unit includes ONLY the facade's public headers -- no MFC,
-// no afx*, no TargetCore, no WinSock. If the facade leaked its internals this
+// no afx*, no Targetcore, no WinSock. If the facade leaked its internals this
 // file would not compile.
 //
 // Covered:
@@ -1207,7 +1207,7 @@ int main ( )
     // process, which is how a client would actually use it.
     //
     // The shape being demonstrated is the one the plan predicted: the eleven
-    // _TargetCore_UseExamples mesh harnesses are all "create some hubs, arm some
+    // _Targetcore_UseExamples mesh harnesses are all "create some hubs, arm some
     // edges, exchange a message", and that part becomes data.
     std::printf ( "\n-- topology from text --\n" );
 
@@ -1572,7 +1572,7 @@ int main ( )
       // option on a listening hub used to describe an idle object: no Login
       // bit, and a trace switched on there switched on nothing. The facade
       // now walks the hub's connections (EnumP2PmsgCon, exported from
-      // TargetCore for this) and picks by what is being asked.
+      // Targetcore for this) and picks by what is being asked.
       unsigned int uStateL = 0, uStateD = 0;
       Check ( extA.getConOption ( L"Ext.Node", p2pf::P2PF_OPT_CONSTATE, &uStateL ) == S_OK &&
               extB.getConOption ( L"Ext",      p2pf::P2PF_OPT_CONSTATE, &uStateD ) == S_OK,

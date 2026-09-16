@@ -312,7 +312,7 @@ FacadeNetwork::Release ( )
 const wchar_t*
 FacadeNetwork::VersionString ( ) const
 {
-    return L"TargetFacade ABI 11 / TargetCore(2026)";
+    return L"TargetFacade ABI 11 / Targetcore(2026)";
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -1010,7 +1010,7 @@ FacadeNetwork::SetSecurityDir ( const wchar_t *dir )
 //  slot, one key, synchronous, on the raising thread.  What settles it as the
 //  intended path rather than a leftover is the kernel's own file logger --
 //  MsgexceptionLog::Startup registers there, with its CreateP2PeventSinkdebug
-//  line commented out directly beneath (TargetCoreLog.cpp:184-186).
+//  line commented out directly beneath (TargetcoreLog.cpp:184-186).
 //
 //  Everything visible in this ABI follows from that one fact:
 //    * it is on the NETWORK -- the slot is process-wide and takes no hub;

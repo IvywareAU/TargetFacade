@@ -74,7 +74,7 @@
 // And what ABI 10 adds, which is the log both halves were always missing:
 //
 //   onDiag               ONE stream. The supervisor's own "sweep 3 starting"
-//                        and TargetCore's "not deliverable to [Watch.Zombie]"
+//                        and Targetcore's "not deliverable to [Watch.Zombie]"
 //                        arrive at the same handler, in order, each stamped
 //                        with the thread that raised it. Before this the
 //                        kernel's half went nowhere at all.
@@ -94,7 +94,7 @@
 //     onTimer  (pump)  --SetEvent-->  sweep (main thread)  --post()-->  (pump)
 //
 // Build: part of TargetFacade(2026).sln. Includes only the facade's public
-// headers -- no MFC, no TargetCore, no WinSock.
+// headers -- no MFC, no Targetcore, no WinSock.
 //
 // Exit code 0 = the run did what this file says it does.
 
@@ -167,7 +167,7 @@ int wmain ( )
     // captures die at the end of wmain, and the hubs are torn down after that.
     // -----------------------------------------------------------------------
     std::atomic<int> nDiagMine   { 0 };   // lines this program wrote
-    std::atomic<int> nDiagKernel { 0 };   // lines TargetCore wrote
+    std::atomic<int> nDiagKernel { 0 };   // lines Targetcore wrote
 
     net.onDiag ( [&] ( const p2pf::DiagEvent& d )
     {
@@ -463,7 +463,7 @@ int wmain ( )
     // THE ESCAPE HATCH. This is a P2PeerHub*, and casting it is the point --
     // it is how a client reaches a kernel feature this facade does not expose
     // (a sub-target, a second pump, a custom P2Peerio). Doing so needs
-    // TargetCore's headers, its import lib, MFC and its threading rules, and
+    // Targetcore's headers, its import lib, MFC and its threading rules, and
     // nothing done through it is covered by any promise this layer makes.
     // Which is why this example only PRINTS it.
     void *pNative = watch.native();
@@ -475,7 +475,7 @@ int wmain ( )
           L"every sweep announced itself into the kernel's own log stream" );
     Say ( net.diagWanted ( p2pf::P2PF_DIAGM_APP ),
           L"...and IsDiagWanted says so, which is what gates an expensive line" );
-    std::wprintf ( L"      %d line(s) of it came from TargetCore itself\n",
+    std::wprintf ( L"      %d line(s) of it came from Targetcore itself\n",
                    (int)nDiagKernel );
 
     // UNREGISTER BEFORE THE CAPTURES DIE. The counters above go out of scope

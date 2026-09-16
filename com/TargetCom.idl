@@ -489,7 +489,7 @@ interface IP2PNetworkCom : IDispatch
     // arguments, so no existing script and no existing early-bound client
     // changes.  (facade ABI 11)
     //
-    // AUTHENTICATED HUBS.  Underneath this server, TargetCore has carried a
+    // AUTHENTICATED HUBS.  Underneath this server, Targetcore has carried a
     // signed login, a per-connection session cypher, an allow-list, a
     // revocation list and an arming gate for some time, and none of it was
     // reachable from a script -- the facade spawns every hub with the

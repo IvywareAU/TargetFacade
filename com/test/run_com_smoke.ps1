@@ -56,7 +56,7 @@ foreach ($p in @($comDll, $exe)) {
     if (-not (Test-Path $p)) { throw "missing $p -- build the $Config|$Platform configuration first" }
 }
 
-# The facade's post-build step stages Msgcore.dll and TargetCore.dll into the
+# The facade's post-build step stages Msgcore.dll and Targetcore.dll into the
 # shared output folder, so normally everything the test exe and the COM server
 # need is already beside them and nothing is copied here at all. The fallbacks
 # cover a tree where that step did not run: IW_CustomBuildStep.bat deploys both
@@ -75,7 +75,7 @@ function Resolve-Dep([string] $name, [string[]] $candidates) {
 $binCfg = "$Config" + $(if ($Platform -eq 'x64') { '64' } else { '32' })
 $deps = @(
     (Resolve-Dep 'TargetFacade.dll' @($outDir)),
-    (Resolve-Dep 'TargetCore.dll'   @($outDir, "$repo\bin\$binCfg", "$repo\TargetCore\out\$Platform\$Config")),
+    (Resolve-Dep 'Targetcore.dll'   @($outDir, "$repo\bin\$binCfg", "$repo\Targetcore\out\$Platform\$Config")),
     (Resolve-Dep 'Msgcore.dll'      @($outDir, "$repo\bin\$binCfg", "$repo\Msgcore\$Platform\$Config"))
 )
 

@@ -1,12 +1,12 @@
 # TargetFacade
 
-A minimal, macro-free facade DLL over `TargetCore.dll`. Clients include
+A minimal, macro-free facade DLL over `Targetcore.dll`. Clients include
 **one header** (`include/TargetFacade.h`), link **one import lib**, and never
 see P2PeerHub, P2PeerCon, P2PeerMsg, MFC, WSAStartup or any `BEGIN_*_MAP`
 macro.
 
 ```
-  C++ client ─────────> TargetFacade.dll ──> TargetCore.dll ──> Msgcore.dll
+  C++ client ─────────> TargetFacade.dll ──> Targetcore.dll ──> Msgcore.dll
                              ^  (flat vtable ABI, HRESULT)   (MFC classes, factories, maps)
                              │
 script / VB / .NET ──> TargetCom.dll
@@ -18,7 +18,7 @@ script / VB / .NET ──> TargetCom.dll
 
 Everything in the public header is implemented. `test/FacadeSmokeTest` is a
 console client that includes **only** the facade's public headers — no MFC, no
-`afx*`, no TargetCore, no WinSock — so it fails to compile if the facade ever
+`afx*`, no Targetcore, no WinSock — so it fails to compile if the facade ever
 starts leaking its internals.
 
 181 checks, Debug|x64 and Release|x64, all green: TCP loopback (both sides see
@@ -46,7 +46,7 @@ cd test\FacadeSmokeTest\x64\Debug && FacadeSmokeTestd.exe    # exit 0 = pass
 Serial (`serial://COM5`) is not covered by this smoke test — it needs two real
 or virtual (com0com) COM ports on a null-modem link, so it is skipped on a
 machine without them. It **is** exercised end-to-end, on both configurations,
-by `_TargetCore_UseExamplesLight\Com232MeshTest` against a com0com COM5↔COM6 pair.
+by `_Targetcore_UseExamplesLight\Com232MeshTest` against a com0com COM5↔COM6 pair.
 
 `test/WildcardListenTest` is a second console client, same rules, covering what
 `toPeer` means on the listening side: 47 checks, Debug|x64 and Release|x64, all
@@ -71,7 +71,7 @@ The optional COM layer in `com\` is built and tested too: 101 more checks from a
 real STA client, both configurations, plus 27 late-bound from PowerShell (see
 "`com\` — the ATL layer" below).
 
-The facade→TargetCore mapping is documented in `src/FacadeInternal.h`.
+The facade→Targetcore mapping is documented in `src/FacadeInternal.h`.
 
 ## The API in 20 lines
 
@@ -291,7 +291,7 @@ When the DLL rejects an endpoint it counts lines in the text *it* was given, so
 `parse()` keeps a line-for-line back-map and `arm()` reports the line number in
 **your** file.
 
-The shape this was predicted to be good for is the eleven `_TargetCore_UseExamples`
+The shape this was predicted to be good for is the eleven `_Targetcore_UseExamples`
 mesh harnesses — all of them "create some hubs, arm some edges, exchange a
 message" — and section 19 demonstrates exactly that: a three-hub chain built
 from the text above, then a message from `Top` to `Top.Mid.Leaf` that crosses
@@ -663,10 +663,10 @@ links completed their login — the rest failed silently. With both: **8 of 8**.
 
 Both halves reach 32-bit as well as 64-bit. That was not free: the 32-bit kernel
 would not compile at the time (`P2PeerHub.cpp:74` uses `std::atomic_ref` while
-the `Win32` configurations were still on `stdcpp17`), so no x86 `TargetCore`
+the `Win32` configurations were still on `stdcpp17`), so no x86 `Targetcore`
 existed and the 32-bit scripting tier — VB6, 32-bit Office/VBA, WSH, classic ASP,
 the widest part of this layer's audience — would have kept the bug. See
-`_TargetCore_UseExamplesCom/COM_dependancy.md` under "Two constraints that actually
+`_Targetcore_UseExamplesCom/COM_dependancy.md` under "Two constraints that actually
 bite"; `vbs_client.vbs` under `SysWOW64\cscript.exe` is 11/11 on both Win32
 configurations against the fixed kernel.
 
@@ -875,7 +875,7 @@ matching claim.
 
 ## Past the messaging slice (ABI 6)
 
-Everything above this line is **one** subsystem of TargetCore: a hub, its
+Everything above this line is **one** subsystem of Targetcore: a hub, its
 connections, and traffic between them. `missing.md` is the audit of what that
 leaves out — roughly nine other subsystems — and `missing_progress.md` is the
 record of closing the cheapest six of its recommendations. Ten methods, all
@@ -945,7 +945,7 @@ recorded limitations and are now behaviour, pinned by section 22 of
 
 **`P2PF_EVT_ROUTING_ERROR` now fires for the bounce it is named after.** It was
 raised from `On_P2PeerError`, i.e. for `P2Pmsg_Error` — and nothing in
-TargetCore posts one (the only factory that did is commented out,
+Targetcore posts one (the only factory that did is commented out,
 `P2PeerMsg.cpp:660-676`). What the kernel actually sends back, from
 `RouteP2PeerMsg` for an undeliverable message and from `NotHandled` for one
 nobody handled, is a `P2Pmsg_Exception`, which was caught by `P2PeerTarget`'s
@@ -963,7 +963,7 @@ of what it actually does. And the kernel's `P2PmsgPing` has no responder at all
 a facade hub simply times out.
 
 `GetNative` is the one to think about twice. It hands back the `P2PeerHub`, and
-the moment you cast it you need TargetCore's headers, its lib, MFC and its
+the moment you cast it you need Targetcore's headers, its lib, MFC and its
 threading rules back, with none of this layer's guarantees and none of its
 bookkeeping. It is here because the alternative is worse: a client needing one
 unexposed kernel feature otherwise has to abandon the facade entirely for that
@@ -1077,7 +1077,7 @@ inside the value.
 **Two things the build taught us**, both in `missing_progress.md` §7:
 
 * `#include "P2Pmsg.h"` resolves to `..\Msgcore\P2Pmsg.h`, **not** to
-  `..\TargetCore\P2Pmsg(2Msgcore).h` — and in the file that compiles, `class
+  `..\Targetcore\P2Pmsg(2Msgcore).h` — and in the file that compiles, `class
   P3PmsgNode` is entirely commented out, with `typedef P3PmsgField P3PmsgItem`
   left behind. There is no depth, no child count and no cursor, which is why
   fields are a flat map and why the facade writes its own name index beside
@@ -1149,7 +1149,7 @@ hub runs on — which is the only thread allowed to close one of these.
 
 ## The kernel narrates (ABI 10)
 
-TargetCore has been describing everything it does — every refused login,
+Targetcore has been describing everything it does — every refused login,
 dropped connection, undeliverable message — into a notification slot that no
 facade client could reach. `OnError` handed over one sentence the header tells
 you not to parse; `OnEvent` added a code for the four conditions the *facade*
@@ -1202,7 +1202,7 @@ slot would also switch off the host application's.
 
 ## Secure hubs (ABI 11)
 
-TargetCore has carried a signed login, a per-connection session cypher, an
+Targetcore has carried a signed login, a per-connection session cypher, an
 allow-list, a revocation list and an arming gate for some time, and **none of
 it was reachable from here.** A facade hub was created from an address and a
 sink; there was no argument through which a key file, an allow-list or a
@@ -1228,7 +1228,7 @@ net.Link "Demo", "Demo.Client"
 
 Note the verb that did *not* change. `Link` is still `Link`, with the same
 three arguments — because **authentication is a property of a hub, not of a
-link.** Enforcement in TargetCore is hub-wide with no per-connection override,
+link.** Enforcement in Targetcore is hub-wide with no per-connection override,
 so "is this link authenticated" was never a question one link could answer: a
 hub either demands a signed login from everything that reaches it or from
 nothing. Saying it once, when the hub is made and before it can have a
@@ -1314,7 +1314,7 @@ been asked to use.
 
 ### What it deliberately does not turn on
 
-TargetCore also defaults to requiring an end-to-end **seal** on any body that
+Targetcore also defaults to requiring an end-to-end **seal** on any body that
 will cross an intermediate hub, and an **origin attestation** on anything
 arriving down an ancestor link. Both are properties of an *origin and a
 destination*; this flag secures a hub and its *edges*. For routed traffic — the
@@ -1481,7 +1481,7 @@ that *is* provisioning.
   unicast. The body is `[magic][topicChars][topic][payload]`, which keeps it
   binary-safe; an unframed body from a non-facade peer is delivered whole.
 * **Regular MFC DLL** (`UseOfMfc=Dynamic`, `CWinApp` instance,
-  `AFX_MANAGE_STATE` at exported entries) because TargetCore is MFC-based —
+  `AFX_MANAGE_STATE` at exported entries) because Targetcore is MFC-based —
   invisible to clients.
 
 ## `com\` — the ATL layer (built, tested)
@@ -1780,8 +1780,8 @@ calls that follow name no endpoint at all — yet link up over TCP. A malformed
 line comes back as `line 2` in `Err.Description`, which is the whole reason the
 map validates when it is set. 27 checks.
 
-Beyond this smoke test, **`_TargetCore_UseExamplesCom`** rebuilds all eleven
-`_TargetCore_UseExamples` harnesses on this layer — 15/15 green on both
+Beyond this smoke test, **`_Targetcore_UseExamplesCom`** rebuilds all eleven
+`_Targetcore_UseExamples` harnesses on this layer — 15/15 green on both
 configurations, including a VBScript client under `cscript`, which is the
 least capable client the layer will ever have.
 
@@ -1793,9 +1793,9 @@ nothing subtler:
 
 | tree | uses | state |
 |---|---|---|
-| `_TargetCore_UseExamplesLight` | the flat C++ ABI | **migrated.** `listenDmx(p, s)` → `listen(p, L"dmx://" s)`, `listen(p, 7788)` → `listen(p, L"tcp://:7788")`. 13/13 on Debug\|x64; 11/13 on Release\|x64 |
-| `_TargetCore_UseExamplesCom` | `IP2PHubCom` early-bound | **migrated.** Same rewrite in COM spelling, rebuilt against the regenerated `TargetCom_h.h`. 15/15 on Debug\|x64 and Release\|x64, including both script clients; the 32-bit VBScript client re-verified 11/11 on `Debug\|Win32` and `Release\|Win32` |
-| `_TargetCore_UseExamplesNet` | `IP2PHubCom` via a hand-written `TargetComInterop.cs` | **migrated.** New IID plus renumbered dispids in the interop, then the same call-site rewrite. 13/13 on Debug\|x64; 12/13 on Release\|x64 |
+| `_Targetcore_UseExamplesLight` | the flat C++ ABI | **migrated.** `listenDmx(p, s)` → `listen(p, L"dmx://" s)`, `listen(p, 7788)` → `listen(p, L"tcp://:7788")`. 13/13 on Debug\|x64; 11/13 on Release\|x64 |
+| `_Targetcore_UseExamplesCom` | `IP2PHubCom` early-bound | **migrated.** Same rewrite in COM spelling, rebuilt against the regenerated `TargetCom_h.h`. 15/15 on Debug\|x64 and Release\|x64, including both script clients; the 32-bit VBScript client re-verified 11/11 on `Debug\|Win32` and `Release\|Win32` |
+| `_Targetcore_UseExamplesNet` | `IP2PHubCom` via a hand-written `TargetComInterop.cs` | **migrated.** New IID plus renumbered dispids in the interop, then the same call-site rewrite. 13/13 on Debug\|x64; 12/13 on Release\|x64 |
 
 A stale C++ binary is not a silent hazard — it fails at `P2PF_CreateNetwork`
 with `P2PF_E_ABI_MISMATCH`. A stale COM client fails at `QueryInterface`,
@@ -1830,7 +1830,7 @@ Three things the migrations turned up that are worth keeping:
   side** (above) rather than by reshaping the arming pair: the code is a
   *success* code, so it was never going to survive the HRESULT, but the
   condition it reports is still true a second later and can simply be asked
-  about. `_TargetCore_UseExamplesNet\TwoConTest` now prints `RelationTo` and
+  about. `_Targetcore_UseExamplesNet\TwoConTest` now prints `RelationTo` and
   `Description` next to the `S_OK` its arming calls still report — the two lines
   side by side are the whole lesson. The general rule, which `Broadcast` already
   follows: if an automation-facing method has something to say **on success**, it
@@ -1847,7 +1847,7 @@ below is how **little** of it a client inherits.
 
 | dependency | kind | where it comes from |
 |---|---|---|
-| **TargetCore** | sibling MSCS project, `TargetCore.lib` | headers `..\TargetCore`, libs `..\lib\$(Platform)\$(Configuration)` |
+| **Targetcore** | sibling MSCS project, `Targetcore.lib` | headers `..\Targetcore`, libs `..\lib\$(Platform)\$(Configuration)` |
 | **Msgcore** | sibling MSCS project, `Msgcore.lib` | headers `..\Msgcore`, same lib dir |
 | **MFC** (dynamic) | `UseOfMfc=Dynamic` | `afx.h`, `afxwin.h`, `afxext.h`, `afxmt.h`, `afxtempl.h` |
 | **Winsock 2 / MSWSock** | `ws2_32.lib`, `MsWsock.lib` | `WinSock2.h`, `mswsock.h`, `ws2tcpip.h` |
@@ -1860,24 +1860,24 @@ Everything from the two kernel trees enters through exactly one header —
 
 ```
 P2Pwin32.h  P2PeerHub.h  P2PeerConWsa.h  P2PeerConPipe.h  P2PeerConDmx.h
-P2PeerCon232.h  P2Peerio.h  P2PeerioDmx.h  P2PeerMsg.h        <- TargetCore
+P2PeerCon232.h  P2Peerio.h  P2PeerioDmx.h  P2PeerMsg.h        <- Targetcore
 Msgexception.h                                                <- Msgcore
 ```
 
-Nine of those come from **TargetCore** and one from **Msgcore**, but that split
+Nine of those come from **Targetcore** and one from **Msgcore**, but that split
 describes the `#include` lines, not the dependency. Both trees are on the header
-path (`AdditionalIncludeDirectories = include;src;..\Msgcore;..\TargetCore`), a
-quoted include falls through to whichever tree has the file, and the TargetCore
+path (`AdditionalIncludeDirectories = include;src;..\Msgcore;..\Targetcore`), a
+quoted include falls through to whichever tree has the file, and the Targetcore
 headers lean on Msgcore heavily. The real transitive closure is **15 headers
-from TargetCore and 13 from Msgcore**:
+from Targetcore and 13 from Msgcore**:
 
 | tree | headers reached |
 |---|---|
-| **TargetCore** | the nine above, plus `P2Peer.h`, `P2PeerCon.h`, `P2PeerTarget.h`, `P2PeerExplorer.h`, `TargetCore.h`, `P2PmsgMaps.h` |
+| **Targetcore** | the nine above, plus `P2Peer.h`, `P2PeerCon.h`, `P2PeerTarget.h`, `P2PeerExplorer.h`, `Targetcore.h`, `P2PmsgMaps.h` |
 | **Msgcore** | `Msgexception.h`, `Msgcore.h`, `P2Pmsg.h`, `P2PmsgBSTR.h`, `P2PmsgMgr.h`, `P2PmsgVBLock.h`, `MsgAttr.h`, `MsgCollectors.h`, `MsgCurs.h`, `MsgDesc.h`, `MsgList.h`, `MsgStck.h`, `MsgVect.h` |
 
 Two of those names are worth watching: `P2Pmsg.h` and `P2PmsgBSTR.h` resolve
-into **Msgcore**, even though TargetCore holds files called
+into **Msgcore**, even though Targetcore holds files called
 `P2Pmsg(2Msgcore).h` and `P2PmsgBSTR(2Msgcore).h`. The parenthesised copies are
 not reachable by their `#include` spelling, so they are never what gets
 compiled here. Only `comutil.h` and `wtypes.h` fall through to the SDK.
@@ -1889,7 +1889,7 @@ Debug|Release × x64|Win32.
 
 The public headers (`include/TargetFacade.h`, `TargetFacadeFn.hpp`,
 `TargetFacadeTopology.hpp`) include `<windows.h>` and the C++17 standard library
-and **nothing else** — no MFC, no `afx*`, no TargetCore, no WinSock. A client
+and **nothing else** — no MFC, no `afx*`, no Targetcore, no WinSock. A client
 links `TargetFacade.lib` and adds `include\` to its header path. That is the
 whole contract, and it is enforced rather than asserted: `FacadeSmokeTest`,
 `WildcardListenTest` and `HubWatchdog` are all built **without** `UseOfMfc`, so
@@ -1911,7 +1911,7 @@ the solution stops compiling the moment the facade leaks one of its internals.
 | **COM runtime** | `objbase.h`, `process.h` |
 
 Note what is *absent*: the COM server does **not** use MFC and does **not** see
-Msgcore or TargetCore. It is a client of the facade like any other, which is why
+Msgcore or Targetcore. It is a client of the facade like any other, which is why
 it can be built and shipped separately.
 
 `com\test\ComSmokeTest` links `ole32.lib`, `oleaut32.lib`, `uuid.lib` and
@@ -1923,10 +1923,10 @@ at all, because a real automation client would not.
 ### Build order and staging
 
 `..\lib\<Platform>\<Configuration>\` must already hold `Msgcore.lib` and
-`TargetCore.lib` — keyed by configuration as well as platform, because the Debug
+`Targetcore.lib` — keyed by configuration as well as platform, because the Debug
 and Release lib names are identical. Then: facade first, COM layer second (it
 reads the facade's import lib out of `..\x64\Debug` and friends), tests and
-examples last. At run time `TargetFacade.dll` must sit next to `TargetCore.dll`
+examples last. At run time `TargetFacade.dll` must sit next to `Targetcore.dll`
 and `Msgcore.dll`.
 
 ## Building
@@ -1937,9 +1937,9 @@ Open `TargetFacade(2026).sln` (Debug|x64 / Release|x64), or:
 msbuild "TargetFacade(2026).vcxproj" -p:Configuration=Debug -p:Platform=x64
 ```
 
-Links against `..\lib\Msgcore.lib` + `TargetCore.lib` (Release:
-`..\lib\x64` first) — same layout as every project in `_TargetCore_UseExamples`.
-Deploy `TargetFacade.dll` next to `TargetCore.dll`,
+Links against `..\lib\Msgcore.lib` + `Targetcore.lib` (Release:
+`..\lib\x64` first) — same layout as every project in `_Targetcore_UseExamples`.
+Deploy `TargetFacade.dll` next to `Targetcore.dll`,
 `Msgcore.dll` (e.g. `MSCS\bin\Debug64`).
 
 "Armed" is the facade's word for the state a connection is in between `listen`/`connect` returning `S_OK` and the peer actually being up. It means: **this hub has told the kernel to build a connection object for that peer, and the kernel accepted it.** Nothing more.
@@ -2018,5 +2018,5 @@ Copyright © 2026 Khrustal & Mann
 Some files in this repository are **not** covered by that licence — Microsoft project-template
 and wizard-generated files keep their own notices, and the MFC / ATL / Visual C++ runtime /
 Windows SDK components this library links against are licensed separately and are not bundled
-here. TargetCore and Msgcore are separate repositories under the same licence and are likewise
+here. Targetcore and Msgcore are separate repositories under the same licence and are likewise
 not bundled. [NOTICE](NOTICE) lists every one of them.
