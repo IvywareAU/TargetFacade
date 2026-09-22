@@ -544,12 +544,22 @@ FacadeHub::~FacadeHub ( )
 //           RequireSeal       the outbound gate. A body that will cross an
 //                             INTERMEDIATE hub must be sealed to its
 //                             destination or it is not sent. It also carries
-//                             RequireSealBroadcast, which refuses a broadcast
-//                             on a sealing hub rather than sending it in
-//                             clear. Off here makes the whole path inert
+//                             TWO sub-switches, one per fan-out:
+//                             RequireSealBroadcast refuses a broadcast on a
+//                             sealing hub rather than sending it in clear, and
+//                             since 2026-09-22 RequireSealUpcast does the same
+//                             for an upcast -- which is a second audience and
+//                             so a second decision, not a wider reading of the
+//                             first. Off here makes the whole path inert
 //                             (P2PeerCon::SealAppMsgOutbound returns at its
-//                             first test), so the broadcast switch needs no
-//                             line of its own.
+//                             first test), so NEITHER sub-switch needs a line
+//                             of its own, and that argument is why this list
+//                             did not grow when the second one arrived. It is
+//                             stated rather than left implied because the
+//                             facade never turns RequireSeal on anywhere --
+//                             TrustAndEnforce raises RequireAuth and only
+//                             RequireAuth -- so a reader looking for where the
+//                             upcast refusal could bite here will not find one.
 //           RequireRelayAuth  the INBOUND gate, and the one that is easiest to
 //                             miss because it is deliberately not part of the
 //                             arming gate: a message arriving down an ancestor
