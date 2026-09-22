@@ -3479,13 +3479,23 @@ FacadeHub::On_P2PeerBCast ( P2PeerMsg *pMsg )
 }
 
 //
-//  NOTES: Unreachable in this kernel, and kept anyway.  Nothing dispatches
-//         On_P2PeerUCast -- P2PeerHub's map carries entries for P2Pmsg_BCast
-//         and P2Pmsg_Error only, and no other code path calls the virtual --
-//         so a "P2Pmsg*"-named unicast that this hub's wildcard passes on ends
-//         at NotHandled without ever arriving here.  The override stays
-//         because the vtable slot exists and a kernel that starts using it
-//         must find the facade's semantics in it, not the base's
+//  NOTES: REACHABLE SINCE 2026-09-22, and this note used to say the opposite.
+//         The text here read "unreachable in this kernel, and kept anyway",
+//         because P2PeerHub's map carried entries for P2Pmsg_BCast and
+//         P2Pmsg_Error only and no other code path called the virtual.  There
+//         is now a P2Pmsg_UCast ID and a map entry for it, so an upcast
+//         arrives here the way a broadcast arrives at the handler above, and
+//         this override's reason for existing has stopped being hypothetical
+//       : WHICH IS WHY IT WAS KEPT.  The argument recorded here was that the
+//         vtable slot is public and a kernel that starts using it must find
+//         the facade's semantics in it rather than the base's.  That is
+//         exactly what happened, and the override was already correct when it
+//         did - it delegates to the base, which is the relay, for the same
+//         reason On_P2PeerBCast does
+//       : NOT A BROADCAST for any security purpose.  The base stamps TMsg_Ups
+//         rather than TMsg_Scp, so RequireSealBroadcast(false) does not exempt
+//         an upcast and RequireSealUpcast is the switch that does.  Refer
+//         TMsg_Ups in Targetcore/P2PeerMsg.h
 //
 msgRESULT
 FacadeHub::On_P2PeerUCast ( P2PeerMsg *pMsg )
