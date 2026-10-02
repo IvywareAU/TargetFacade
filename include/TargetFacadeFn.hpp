@@ -40,15 +40,229 @@
 
 #include "TargetFacade.h"
 
+#include <cstring>
 #include <functional>
 #include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace p2pf {
+
+// ---------------------------------------------------------------------------
+// Named fields by name: `out[L"device"] = L"sensor-04"`, and typed views,
+// `view->uptime = 86400`.                              (MsgFieldAccessPlan.md)
+//
+// Sugar over IP2PMessage::SetField / IP2PHub::GetField and nothing more: no
+// ABI is added, the flat surface and the COM layer are untouched. Msgcore's
+// MsgFieldRef.hpp is the same idea for a client holding the tree; this is the
+// one for a client that, by design, never sees the tree.
+//
+//     p2pf::OutMessage out = net.createMessage();
+//     out[L"device"] = L"sensor-04";              // the dynamic form
+//
+//     struct Telemetry : p2pf::FieldView
+//     {
+//         P2PF_FIELD ( device, std::wstring );
+//         P2PF_FIELD ( uptime, int );
+//     };
+//     p2pf::ViewOf<Telemetry> t ( out );
+//     t->uptime = 86400;
+//     hub.sendMsg ( dest, L"telemetry", out );
+//
+//     hub.onTopic ( L"telemetry", [] ( const p2pf::Message& m ) {
+//         p2pf::ViewOf<Telemetry> t ( m );        // READ-ONLY, inside the handler
+//         int up = t->uptime;
+//     });
+//
+// THE BYTES. The facade carries a field as bytes and has never said what they
+// mean; this is where they get one. The SAME table is in Msgcore's
+// MsgFieldRef.hpp (MsgFieldCoding::Bytes), which is how a direct Targetcore
+// client's AppField() and this layer read each other's fields. Change one and
+// you must change the other:
+//
+//     int        4 bytes, native little-endian
+//     long long  8 bytes, native
+//     double     8 bytes, IEEE 754
+//     bool       1 byte, 0 or 1
+//     text       UTF-16 WITH its terminator -- exactly what SetFieldText writes,
+//                so Message::fieldText reads it and so does this
+//     Blob       the bytes, verbatim
+//
+// ERRORS THROW, because `x = 5` has nowhere to return an HRESULT: a write the
+// facade refuses (a reserved or overlong name, a value over MAX_FIELD_SIZE,
+// field 65), a read of an absent field or of bytes that are not the type, and
+// any write through a received message, throw p2pf::FieldError carrying the
+// HRESULT. Test first with exists() where absence is expected.
+//
+// LIFETIMES are the underlying object's: a ref or view made from an OutMessage
+// lives no longer than it, and one made from a received Message only for the
+// length of the handler -- it asks the hub about "the message being
+// delivered", which outside the handler is none (P2PF_E_NO_MESSAGE).
+// ---------------------------------------------------------------------------
+
+class FieldError : public std::runtime_error
+{
+  public:
+    FieldError ( HRESULT hr, const char *what ) : std::runtime_error ( what ), m_hr ( hr ) { }
+    HRESULT hr ( ) const { return m_hr; }
+  private:
+    HRESULT m_hr;
+};
+
+// An opaque byte value. Owning, so a read outlives the handler it came from.
+struct Blob
+{
+    std::vector<unsigned char> bytes;
+
+    Blob ( ) { }
+    Blob ( const void *pv, size_t cb )
+    {
+        if ( pv && cb )
+            bytes.assign ( (const unsigned char*)pv, (const unsigned char*)pv + cb );
+    }
+    explicit Blob ( std::vector<unsigned char> v ) : bytes ( std::move ( v ) ) { }
+
+    const unsigned char* data ( ) const { return bytes.empty() ? nullptr : &bytes[0]; }
+    size_t               size ( ) const { return bytes.size(); }
+    bool                 empty( ) const { return bytes.empty(); }
+    bool operator == ( const Blob& rhs ) const { return bytes == rhs.bytes; }
+    bool operator != ( const Blob& rhs ) const { return bytes != rhs.bytes; }
+};
+
+// One named field of an OutMessage (read and write) or of the message a hub
+// is delivering (read only).
+class FieldRef
+{
+  public:
+    FieldRef ( IP2PMessage *out, const wchar_t *name )
+      : m_out ( out ), m_hub ( nullptr ), m_name ( name ? name : L"" ) { }
+    FieldRef ( IP2PHub *in, const wchar_t *name )
+      : m_out ( nullptr ), m_hub ( in ), m_name ( name ? name : L"" ) { }
+
+    FieldRef ( const FieldRef& ) = default;
+    // Binding or value? Say which: `a = b.asInt()`.
+    FieldRef& operator = ( const FieldRef& ) = delete;
+
+    // One overload per type, so a value that converts to two equally (an
+    // unsigned, a long) is a compile error instead of a guess.
+    FieldRef& operator = ( int v )        { INT32 x = (INT32)v;  return put ( &x, sizeof x ); }
+    FieldRef& operator = ( long long v )  { INT64 x = (INT64)v;  return put ( &x, sizeof x ); }
+    FieldRef& operator = ( double v )     { return put ( &v, sizeof v ); }
+    FieldRef& operator = ( bool v )       { unsigned char x = v ? 1 : 0; return put ( &x, 1 ); }
+    FieldRef& operator = ( const wchar_t *v )
+    {
+        writable();
+        check ( m_out->SetFieldText ( m_name.c_str(), v ? v : L"" ), "SetFieldText refused the field" );
+        return *this;
+    }
+    FieldRef& operator = ( const std::wstring& v )
+    {
+        // Not SetFieldText(v.c_str()): an embedded NUL would end it early.
+        std::vector<unsigned char> b ( ( v.size() + 1 ) * sizeof(wchar_t), 0 );
+        if ( !v.empty() ) std::memcpy ( &b[0], v.data(), v.size() * sizeof(wchar_t) );
+        return put ( &b[0], (unsigned int)b.size() );
+    }
+    // A narrow string is UTF-8 and is stored as text; there is one storage
+    // form for text so that every reader asks for it the same way.
+    FieldRef& operator = ( const char *utf8 )      { return *this = fromUtf8 ( utf8 ); }
+    FieldRef& operator = ( const Blob& v )         { return put ( v.data(), v.size() ); }
+
+    // Reads. Each wants its own type's exact size; the wrong size is the
+    // wrong type, and throws.
+    int       asInt   ( ) const { INT32 x = 0; exact ( &x, sizeof x, "the field is not an int" ); return (int)x; }
+    long long asInt64 ( ) const { INT64 x = 0; exact ( &x, sizeof x, "the field is not a 64-bit int" ); return (long long)x; }
+    double    asReal  ( ) const { double x = 0; exact ( &x, sizeof x, "the field is not a double" ); return x; }
+    bool      asBool  ( ) const { unsigned char x = 0; exact ( &x, 1, "the field is not a bool" ); return x != 0; }
+    std::wstring asText ( ) const
+    {
+        std::vector<unsigned char> b = get();
+        if ( b.size() % sizeof(wchar_t) )
+            throw FieldError ( E_INVALIDARG, "the field is not text: an odd number of bytes" );
+        size_t n = b.size() / sizeof(wchar_t);
+        if ( n && b[b.size() - 1] == 0 && b[b.size() - 2] == 0 ) --n;   // the terminator
+        std::wstring s ( n, L'\0' );
+        if ( n ) std::memcpy ( &s[0], &b[0], n * sizeof(wchar_t) );
+        return s;
+    }
+    Blob asBlob ( ) const { return Blob ( get() ); }
+
+    bool exists ( ) const
+    {
+        unsigned int cb = 0;
+        return SUCCEEDED ( m_out ? m_out->GetField ( m_name.c_str(), nullptr, &cb )
+                         : m_hub ? m_hub->GetField ( m_name.c_str(), nullptr, &cb )
+                                 : E_POINTER );
+    }
+    // S_FALSE semantics flattened to a bool: true if it was there.
+    bool erase ( )
+    {
+        writable();
+        return m_out->RemoveField ( m_name.c_str() ) == S_OK;
+    }
+
+    const std::wstring& name ( ) const { return m_name; }
+
+  private:
+    static void check ( HRESULT hr, const char *what )
+    {
+        if ( FAILED(hr) ) throw FieldError ( hr, what );
+    }
+    void writable ( ) const
+    {
+        if ( !m_out )
+            throw FieldError ( E_ACCESSDENIED, m_hub ? "a received message's fields are read-only"
+                                                     : "the field belongs to a view that was never bound" );
+    }
+    FieldRef& put ( const void *pv, size_t cb )
+    {
+        writable();
+        check ( m_out->SetField ( m_name.c_str(), pv, (unsigned int)cb ), "SetField refused the field" );
+        return *this;
+    }
+    std::vector<unsigned char> get ( ) const
+    {
+        if ( !m_out && !m_hub )
+            throw FieldError ( E_POINTER, "the field belongs to a view that was never bound" );
+        unsigned int cb = 0;
+        HRESULT hr = m_out ? m_out->GetField ( m_name.c_str(), nullptr, &cb )
+                           : m_hub->GetField ( m_name.c_str(), nullptr, &cb );
+        check ( hr, "the field could not be read" );
+        std::vector<unsigned char> b ( cb );
+        if ( cb )
+        {
+            hr = m_out ? m_out->GetField ( m_name.c_str(), &b[0], &cb )
+                       : m_hub->GetField ( m_name.c_str(), &b[0], &cb );
+            check ( hr, "the field could not be read" );
+            b.resize ( cb );
+        }
+        return b;
+    }
+    void exact ( void *pv, size_t cb, const char *what ) const
+    {
+        std::vector<unsigned char> b = get();
+        if ( b.size() != cb ) throw FieldError ( E_INVALIDARG, what );
+        std::memcpy ( pv, &b[0], cb );
+    }
+    static std::wstring fromUtf8 ( const char *s )
+    {
+        if ( !s || !*s ) return std::wstring();
+        // Flags 0: an invalid sequence becomes U+FFFD rather than a failure.
+        int n = ::MultiByteToWideChar ( CP_UTF8, 0, s, -1, nullptr, 0 );
+        if ( n <= 1 ) return std::wstring();
+        std::wstring w ( (size_t)n, L'\0' );
+        ::MultiByteToWideChar ( CP_UTF8, 0, s, -1, &w[0], n );
+        w.resize ( (size_t)n - 1 );
+        return w;
+    }
+
+    IP2PMessage  *m_out;
+    IP2PHub      *m_hub;
+    std::wstring  m_name;
+};
 
 // What a topic handler receives.  `payload` is only valid inside the handler.
 struct Message
@@ -106,6 +320,10 @@ struct Message
 
     // Every field name, in the order the sender set them.
     inline std::vector<std::wstring> fieldNames ( ) const;
+
+    // One field, typed: `int up = m[L"uptime"].asInt();`. Read-only, and only
+    // for the length of the handler -- see FieldRef.
+    FieldRef operator [] ( const wchar_t *name ) const { return FieldRef ( hub, name ); }
 };
 
 inline std::wstring Message::destination ( ) const
@@ -203,11 +421,166 @@ class OutMessage
         return n;
     }
 
+    // One field by name, typed: `out[L"uptime"] = 86400;`. See FieldRef.
+    FieldRef operator [] ( const wchar_t *name ) const { return FieldRef ( m_p, name ); }
+
     IP2PMessage* raw ( ) const        { return m_p; }
     explicit operator bool ( ) const  { return m_p != nullptr; }
 
   private:
     IP2PMessage *m_p = nullptr;
+};
+
+// ---------------------------------------------------------------------------
+// Typed views over an OutMessage or a received Message.
+//
+// The facade-side twin of Msgcore's MSG_FIELD views: a struct of P2PF_FIELD
+// members deriving from FieldView, bound by ViewOf<T>. A member accepts only
+// its declared type's family, so `t->uptime = L"x"` does not compile -- it
+// stops at a static_assert that says so.
+// ---------------------------------------------------------------------------
+class FieldView
+{
+  public:
+    FieldView ( ) { }
+    FieldView             ( const FieldView& ) = delete;
+    FieldView& operator = ( const FieldView& ) = delete;
+
+    FieldRef operator [] ( const wchar_t *name ) const { return ref ( name ); }
+    FieldRef ref ( const wchar_t *name ) const
+    {
+        return m_out ? FieldRef ( m_out, name ) : FieldRef ( m_hub, name );
+    }
+
+  private:
+    template <class T> friend class ViewOf;
+    IP2PMessage *m_out = nullptr;
+    IP2PHub     *m_hub = nullptr;
+};
+
+template <class T> struct FieldTraits;      // undefined: an unsupported type
+
+template <> struct FieldTraits<int>
+{
+    template <class U> struct Accepts : std::integral_constant<bool,
+        std::is_integral<U>::value && !std::is_same<U, bool>::value &&
+        sizeof(U) <= sizeof(int)> { };
+    static void Store ( FieldRef& r, int v )   { r = v; }
+    static int  Load  ( const FieldRef& r )    { return r.asInt(); }
+};
+template <> struct FieldTraits<long long>
+{
+    template <class U> struct Accepts : std::integral_constant<bool,
+        std::is_integral<U>::value && !std::is_same<U, bool>::value> { };
+    static void      Store ( FieldRef& r, long long v ) { r = v; }
+    static long long Load  ( const FieldRef& r )        { return r.asInt64(); }
+};
+template <> struct FieldTraits<double>
+{
+    template <class U> struct Accepts : std::integral_constant<bool,
+        std::is_arithmetic<U>::value && !std::is_same<U, bool>::value> { };
+    static void   Store ( FieldRef& r, double v ) { r = v; }
+    static double Load  ( const FieldRef& r )     { return r.asReal(); }
+};
+template <> struct FieldTraits<bool>
+{
+    template <class U> struct Accepts : std::is_same<U, bool> { };
+    static void Store ( FieldRef& r, bool v )  { r = v; }
+    static bool Load  ( const FieldRef& r )    { return r.asBool(); }
+};
+template <> struct FieldTraits<std::wstring>
+{
+    template <class U> struct Accepts : std::integral_constant<bool,
+        std::is_convertible<U, std::wstring>::value ||
+        std::is_same<U, const char*>::value || std::is_same<U, char*>::value> { };
+    static void Store ( FieldRef& r, const std::wstring& v ) { r = v; }
+    static void Store ( FieldRef& r, const char *utf8 )      { r = utf8; }
+    static std::wstring Load ( const FieldRef& r )           { return r.asText(); }
+};
+template <> struct FieldTraits<Blob>
+{
+    template <class U> struct Accepts : std::is_same<U, Blob> { };
+    static void Store ( FieldRef& r, const Blob& v ) { r = v; }
+    static Blob Load  ( const FieldRef& r )          { return r.asBlob(); }
+};
+
+template <class T>
+class TypedField
+{
+  public:
+    TypedField ( const FieldView *view, const wchar_t *name ) : m_view ( view ), m_name ( name ) { }
+    TypedField ( const TypedField& ) = delete;
+
+    template <class U, class = typename std::enable_if<
+                 FieldTraits<T>::template Accepts<typename std::decay<U>::type>::value>::type>
+    TypedField& operator = ( U&& v )
+    {
+        FieldRef r = ref();
+        FieldTraits<T>::Store ( r, std::forward<U>(v) );
+        return *this;
+    }
+
+    template <class U, class D = typename std::decay<U>::type
+             , class = typename std::enable_if<
+                 !FieldTraits<T>::template Accepts<D>::value &&
+                 !std::is_same<D, TypedField>::value>::type
+             , class = void>
+    TypedField& operator = ( U&& )
+    {
+        static_assert ( sizeof(U) == 0
+                      , "P2PF_FIELD: this value's type is not the field's declared type" );
+        return *this;
+    }
+
+    TypedField& operator = ( const TypedField& rhs )
+    {
+        FieldRef r = ref();
+        FieldTraits<T>::Store ( r, rhs.get() );
+        return *this;
+    }
+
+    T    get    ( ) const { return FieldTraits<T>::Load ( ref() ); }
+    operator T  ( ) const { return get(); }
+    bool exists ( ) const { return ref().exists(); }
+    bool erase  ( )       { return ref().erase(); }
+    FieldRef ref ( ) const { return m_view->ref ( m_name ); }
+
+  private:
+    const FieldView *m_view;
+    const wchar_t   *m_name;
+};
+
+// The identifier once: it is both the member and the field's name. Checked
+// against MAX_FIELD_NAME at compile time.
+#define P2PF_FIELD(id, type)                                                     \
+    static_assert ( sizeof ( L"" #id ) / sizeof ( wchar_t ) - 1                  \
+                        <= ::p2pf::MAX_FIELD_NAME,                               \
+                    "P2PF_FIELD(" #id "): a field name is at most 63 characters" ); \
+    ::p2pf::TypedField<type> id { this, L"" #id }
+
+template <class T>
+class ViewOf
+{
+    static_assert ( std::is_base_of<FieldView, T>::value
+                  , "p2pf::ViewOf<T>: T must derive from p2pf::FieldView" );
+  public:
+    // Read and write, for the life of the OutMessage.
+    explicit ViewOf ( const OutMessage& out ) { static_cast<FieldView&>(m_view).m_out = out.raw(); }
+    // Read only, for the length of the handler.
+    explicit ViewOf ( const Message& in )     { static_cast<FieldView&>(m_view).m_hub = in.hub; }
+
+    ViewOf             ( const ViewOf& ) = delete;
+    ViewOf& operator = ( const ViewOf& ) = delete;
+
+    T*       operator -> ( )       { return &m_view; }
+    const T* operator -> ( ) const { return &m_view; }
+    T&       operator *  ( )       { return m_view; }
+    const T& operator *  ( ) const { return m_view; }
+
+    FieldRef operator [] ( const wchar_t *name ) const { return m_view.ref ( name ); }
+
+  private:
+    T m_view;
 };
 
 // ---------------------------------------------------------------------------

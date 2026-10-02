@@ -1094,6 +1094,47 @@ that tree crosses a wire field for field. It does.
 **All of it reaches COM too**: a `noncreatable` `P2PMessage` coclass with
 `IP2PMessageCom`, `CreateMessage` on the network, and dispids 27–31 on the hub.
 
+### Typed access: `out[L"x"] = v` and `view->x = v`
+
+`TargetFacadeFn.hpp` puts typed field access over `SetField`/`GetField`. It is
+header-only and adds no ABI. The flat surface and the COM layer are unchanged.
+
+```cpp
+struct Telemetry : p2pf::FieldView
+{
+    P2PF_FIELD ( device, std::wstring );
+    P2PF_FIELD ( uptime, int );
+};
+
+p2pf::OutMessage out = net.createMessage();
+p2pf::ViewOf<Telemetry> t ( out );
+t->device = L"sensor-04";
+t->uptime = 86400;
+out[L"note"] = "UTF-8 text";                       // the dynamic form
+hub.sendMsg ( dest, L"telemetry", out );
+
+hub.onTopic ( L"telemetry", [] ( const p2pf::Message& m ) {
+    p2pf::ViewOf<Telemetry> t ( m );               // read-only, inside the handler
+    int up = t->uptime;
+});
+```
+
+**The bytes now have a meaning.** The facade used to carry a field as bytes and
+leave their meaning to the two ends. This layer fixes it: `int` is 4 bytes, `long
+long` 8, `double` 8 (IEEE 754), `bool` 1. Text is UTF-16 *with* its terminator,
+exactly what `SetFieldText` writes, so `fieldText()` still reads it. `p2pf::Blob`
+is stored verbatim. Msgcore's `MsgFieldRef.hpp` carries the same table, and that
+is how a direct Targetcore client's `AppField()` and a facade client read each
+other's fields.
+
+**Errors throw `p2pf::FieldError`**, which carries the HRESULT, because `x = 5` has
+nowhere to return one. The cases: a refused write (`P2PF_E_RESERVED_TOPIC`,
+`P2PF_E_FIELD_LIMIT`), an absent field (`P2PF_E_NO_FIELD`), bytes of the wrong size
+for the type (`E_INVALIDARG`), and any write through a received message
+(`E_ACCESSDENIED`). Use `exists()` where absence is expected. A view member accepts
+only its declared type, so `t->uptime = L"x"` stops at a `static_assert`. Worked
+example: `_Targetcore_UseExamples/FacadeExamples/FieldViewTest`.
+
 Two worked examples, deliberately the same program written twice —
 `examples\HubWatchdog` on the flat C++ ABI and `com\examples\watchdog_client.ps1`
 late-bound through `IDispatch`. Both are supervisors that ping their peers on a
