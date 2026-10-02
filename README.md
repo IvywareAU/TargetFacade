@@ -1120,8 +1120,12 @@ hub.onTopic ( L"telemetry", [] ( const p2pf::Message& m ) {
 ```
 
 **The bytes now have a meaning.** The facade used to carry a field as bytes and
-leave their meaning to the two ends. This layer fixes it: `int` is 4 bytes, `long
-long` 8, `double` 8 (IEEE 754), `bool` 1. Text is UTF-16 *with* its terminator,
+leave their meaning to the two ends. This layer fixes it: `short` is 2 bytes,
+`int` 4, `long long` 8, `double` 8 (IEEE 754), `bool` 1. A `p2pf::Time` (seconds
+since 1970 UTC, explicitly constructed so that a `long long` stays an integer) is
+8 bytes, an int64, so `asInt64()` reads it too: the bytes carry no tag. Only an
+exact `short` is written as 2 bytes, because `char` and `unsigned short` promote to
+`int`. Text is UTF-16 *with* its terminator,
 exactly what `SetFieldText` writes, so `fieldText()` still reads it. `p2pf::Blob`
 is stored verbatim. Msgcore's `MsgFieldRef.hpp` carries the same table, and that
 is how a direct Targetcore client's `AppField()` and a facade client read each

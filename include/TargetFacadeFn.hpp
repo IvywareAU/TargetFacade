@@ -84,8 +84,11 @@ namespace p2pf {
 // client's AppField() and this layer read each other's fields. Change one and
 // you must change the other:
 //
+//     short      2 bytes, native
 //     int        4 bytes, native little-endian
 //     long long  8 bytes, native
+//     Time       8 bytes, native: seconds since 1970 UTC as an int64, so it
+//                reads as a long long too -- the bytes carry no tag
 //     double     8 bytes, IEEE 754
 //     bool       1 byte, 0 or 1
 //     text       UTF-16 WITH its terminator -- exactly what SetFieldText writes,
@@ -133,6 +136,20 @@ struct Blob
     bool operator != ( const Blob& rhs ) const { return bytes != rhs.bytes; }
 };
 
+// A point in time: seconds since 1970 UTC, what a 64-bit time_t holds. Its
+// own type so that a long long stays an integer -- hence explicit.
+class Time
+{
+  public:
+    Time ( ) { }
+    explicit Time ( long long seconds ) : m_seconds ( seconds ) { }
+    long long seconds ( ) const { return m_seconds; }
+    bool operator == ( const Time& rhs ) const { return m_seconds == rhs.m_seconds; }
+    bool operator != ( const Time& rhs ) const { return m_seconds != rhs.m_seconds; }
+  private:
+    long long m_seconds = 0;
+};
+
 // One named field of an OutMessage (read and write) or of the message a hub
 // is delivering (read only).
 class FieldRef
@@ -149,6 +166,10 @@ class FieldRef
 
     // One overload per type, so a value that converts to two equally (an
     // unsigned, a long) is a compile error instead of a guess.
+    // short only on an exact match: char, unsigned short and wchar_t promote
+    // to int, which outranks the conversion to short.
+    FieldRef& operator = ( short v )      { INT16 x = (INT16)v;  return put ( &x, sizeof x ); }
+    FieldRef& operator = ( const Time& v ){ INT64 x = (INT64)v.seconds(); return put ( &x, sizeof x ); }
     FieldRef& operator = ( int v )        { INT32 x = (INT32)v;  return put ( &x, sizeof x ); }
     FieldRef& operator = ( long long v )  { INT64 x = (INT64)v;  return put ( &x, sizeof x ); }
     FieldRef& operator = ( double v )     { return put ( &v, sizeof v ); }
@@ -173,6 +194,8 @@ class FieldRef
 
     // Reads. Each wants its own type's exact size; the wrong size is the
     // wrong type, and throws.
+    short     asShort ( ) const { INT16 x = 0; exact ( &x, sizeof x, "the field is not a short" ); return (short)x; }
+    Time      asTime  ( ) const { INT64 x = 0; exact ( &x, sizeof x, "the field is not a time" ); return Time ( (long long)x ); }
     int       asInt   ( ) const { INT32 x = 0; exact ( &x, sizeof x, "the field is not an int" ); return (int)x; }
     long long asInt64 ( ) const { INT64 x = 0; exact ( &x, sizeof x, "the field is not a 64-bit int" ); return (long long)x; }
     double    asReal  ( ) const { double x = 0; exact ( &x, sizeof x, "the field is not a double" ); return x; }
@@ -460,6 +483,20 @@ class FieldView
 
 template <class T> struct FieldTraits;      // undefined: an unsupported type
 
+template <> struct FieldTraits<short>
+{
+    template <class U> struct Accepts : std::integral_constant<bool,
+        std::is_integral<U>::value && !std::is_same<U, bool>::value &&
+        sizeof(U) <= sizeof(short)> { };
+    static void  Store ( FieldRef& r, short v ) { r = v; }
+    static short Load  ( const FieldRef& r )    { return r.asShort(); }
+};
+template <> struct FieldTraits<Time>
+{
+    template <class U> struct Accepts : std::is_same<U, Time> { };
+    static void Store ( FieldRef& r, const Time& v ) { r = v; }
+    static Time Load  ( const FieldRef& r )          { return r.asTime(); }
+};
 template <> struct FieldTraits<int>
 {
     template <class U> struct Accepts : std::integral_constant<bool,
