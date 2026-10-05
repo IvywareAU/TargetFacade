@@ -64,15 +64,48 @@ IsScheme ( const CString& csToken, const wchar_t *lpszWanted )
     return csToken.CompareNoCase ( lpszWanted ) == 0;
 }
 
-// A listen never names a host: P2PeerConWsa binds INADDR_ANY unconditionally
-// (P2PeerConWsa.cpp:434,448), so "tcp://10.0.0.7:7788" as a LISTEN would read
-// as "bind this NIC" and do nothing of the sort.
+// A listen never names a host.  The facade has no way to say "bind this NIC",
+// so "tcp://10.0.0.7:7788" as a LISTEN would read as one and do nothing of the
+// sort.  What a listen MAY say is which any-address it means, because that is
+// the family: "0.0.0.0" is IPv4's and "::" is IPv6's.
 bool
-IsAnyHost ( const CString& csHost )
+IsAnyHost4 ( const CString& csHost )
 {
     return csHost.IsEmpty()          ||
            csHost == L"*"            ||
            csHost == L"0.0.0.0";
+}
+
+// TRUE for a well-formed RFC4291 literal, with an optional %zone on a dial
+// (a link-local peer needs one to be reachable at all).  getaddrinfo() is what
+// will finally read it; this only refuses what it would refuse later and less
+// helpfully, a Connect armed against a host that can never resolve.
+bool
+IsIPv6Literal ( const CString& csHost, bool bAllowZone )
+{
+    CString csAddr = csHost;
+    int nZone = csAddr.Find ( L'%' );
+    if ( nZone >= 0 )
+    {
+      if ( !bAllowZone || nZone == csAddr.GetLength() - 1 )
+        return false;
+      csAddr = csAddr.Left ( nZone );
+    }
+    IN6_ADDR oAddr;
+    return ::InetPtonW ( AF_INET6, (LPCWSTR)csAddr, &oAddr ) == 1;
+}
+
+// TRUE for "::" in any spelling ("::", "0::0", "0:0:0:0:0:0:0:0").
+bool
+IsIPv6Any ( const CString& csHost )
+{
+    IN6_ADDR oAddr;
+    if ( ::InetPtonW ( AF_INET6, (LPCWSTR)csHost, &oAddr ) != 1 )
+      return false;
+    for ( int i = 0; i < 16; ++i )
+      if ( oAddr.s6_addr[i] )
+        return false;
+    return true;
 }
 
 //
@@ -124,7 +157,21 @@ FacadeEndpoint::Format ( ) const
     CString csOut;
     switch ( eKind )
     {
-      case p2pfTcp:    csOut.Format ( L"tcp://%s:%u", (LPCWSTR)csHost, uNum ); break;
+      case p2pfTcp:
+      {
+        // The scheme carries the family, so a v6 endpoint that dialled by
+        // NAME still says v6 when it is read back.  A literal is bracketed
+        // whenever it holds a ':', which is the only thing the port separator
+        // could be confused with.
+        const wchar_t *lpszScheme = eFamily == p2pfFamIPv6 ? L"tcp6"
+                                  : eFamily == p2pfFamDual ? L"tcp46"
+                                  :                          L"tcp";
+        if ( csHost.Find ( L':' ) >= 0 )
+          csOut.Format ( L"%s://[%s]:%u", lpszScheme, (LPCWSTR)csHost, uNum );
+        else
+          csOut.Format ( L"%s://%s:%u",   lpszScheme, (LPCWSTR)csHost, uNum );
+        break;
+      }
       case p2pfPipe:   csOut.Format ( L"pipe://%s",   (LPCWSTR)csName );       break;
       case p2pfDmx:    csOut.Format ( L"dmx://%s",    (LPCWSTR)csName );       break;
       case p2pfSerial: csOut.Format ( L"serial://COM%u", uNum );               break;
@@ -166,39 +213,102 @@ ParseFacadeEndpoint ( const wchar_t *lpszEndpoint
       csTarget = csTarget.Mid ( 2 );
 
     // --- tcp -------------------------------------------------------------
-    if ( IsScheme ( csScheme, L"tcp"  ) ||
-         IsScheme ( csScheme, L"tcp4" ) ||
-         IsScheme ( csScheme, L"ipv4" )   )
+    //  tcp:// is IPv4 unless the host is a bracketed IPv6 literal, which is
+    //  how an RFC3986 URI spells one: tcp://[::1]:7788 dials v6, and a LISTEN
+    //  on tcp://[::]:7788 is one dual-stack socket serving both families.
+    //  tcp6:// and tcp46:// say the family outright, which is what a dial BY
+    //  NAME needs - the family is also what the resolver may answer, AAAA for
+    //  tcp6 and either for tcp46.  tcp4:// refuses a v6 literal rather than
+    //  quietly changing family under a scheme that names one
+    const bool bTcpAuto = IsScheme ( csScheme, L"tcp"   );
+    const bool bTcp4    = IsScheme ( csScheme, L"tcp4"  ) ||
+                          IsScheme ( csScheme, L"ipv4"  );
+    const bool bTcp6    = IsScheme ( csScheme, L"tcp6"  ) ||
+                          IsScheme ( csScheme, L"ipv6"  );
+    const bool bTcp46   = IsScheme ( csScheme, L"tcp46" );
+    if ( bTcpAuto || bTcp4 || bTcp6 || bTcp46 )
     {
-      // IPv6 must be refused, not mangled: P2PeerConWsa is AF_INET
-      // throughout (P2PeerConWsa.cpp:434,448,564,665).
-      if ( csTarget.Find ( L'[' ) >= 0 )
-        return p2pf::P2PF_E_ENDPOINT;
+      CString csHost, csPort;
+      bool    bBracketed = false;
+      if ( csTarget.Left(1) == L"[" )
+      {
+        int nClose = csTarget.Find ( L']' );
+        if ( nClose < 0 || csTarget.Mid ( nClose + 1, 1 ) != L":" )
+          return p2pf::P2PF_E_ENDPOINT;     // "[::1]" with no port, or junk
+        csHost     = csTarget.Mid ( 1, nClose - 1 );
+        csPort     = csTarget.Mid ( nClose + 2 );
+        bBracketed = true;
+        if ( csHost.IsEmpty() )
+          return p2pf::P2PF_E_ENDPOINT;
+      }
+      else
+      {
+        int nPortSep = csTarget.ReverseFind ( L':' );
+        if ( nPortSep < 0 )
+          return p2pf::P2PF_E_ENDPOINT;     // "tcp://host" -- no port
+        csHost = csTarget.Left ( nPortSep );
+        csPort = csTarget.Mid  ( nPortSep + 1 );
+        // An unbracketed ':' in the host is a v6 literal whose last group
+        // has been read as the port.  Refused, never guessed at
+        if ( csHost.Find ( L':' ) >= 0 || csHost.Find ( L']' ) >= 0 )
+          return p2pf::P2PF_E_ENDPOINT;
+      }
 
-      int nPortSep = csTarget.ReverseFind ( L':' );
-      if ( nPortSep < 0 )
-        return p2pf::P2PF_E_ENDPOINT;       // "tcp://host" -- no port
-
-      CString      csHost = csTarget.Left ( nPortSep );
-      unsigned int uPort  = 0;
-      if ( !ScanUInt ( csTarget.Mid ( nPortSep + 1 ), uPort ) )
+      unsigned int uPort = 0;
+      if ( !ScanUInt ( csPort, uPort ) )
         return p2pf::P2PF_E_ENDPOINT;
       if ( uPort < 1 || uPort > kPortMax )
         return p2pf::P2PF_E_ENDPOINT;
 
+      // Brackets hold an IPv6 literal and nothing else -- not a name, and
+      // not a v4 address
+      if ( bBracketed && !IsIPv6Literal ( csHost, !bListen ) )
+        return p2pf::P2PF_E_ENDPOINT;
+      if ( bTcp4 && bBracketed )
+        return p2pf::P2PF_E_ENDPOINT;
+
+      FacadeFamily eFamily = bTcp6  ? p2pfFamIPv6
+                           : bTcp46 ? p2pfFamDual
+                           :          p2pfFamIPv4;
+
       if ( bListen )
       {
-        if ( !IsAnyHost ( csHost ) )
+        if ( bBracketed )
+        {
+          if ( !IsIPv6Any ( csHost ) )
+            return p2pf::P2PF_E_ENDPOINT;   // a listen cannot pick a NIC
+          if ( bTcpAuto )
+            eFamily = p2pfFamDual;          // "[::]" is every address there is
+        }
+        else if ( csHost == L"0.0.0.0" )
+        {
+          if ( !bTcpAuto && !bTcp4 )
+            return p2pf::P2PF_E_ENDPOINT;   // v4's any-address on a v6 scheme
+        }
+        else if ( !IsAnyHost4 ( csHost ) )
           return p2pf::P2PF_E_ENDPOINT;     // a listen cannot pick a NIC
         csHost.Empty();
       }
-      else if ( csHost.IsEmpty() )
-        return p2pf::P2PF_E_ENDPOINT;       // a dial needs somewhere to go
+      else
+      {
+        if ( csHost.IsEmpty() )
+          return p2pf::P2PF_E_ENDPOINT;     // a dial needs somewhere to go
+        if ( bBracketed && bTcpAuto )
+          eFamily = p2pfFamIPv6;            // the literal IS the family
+        // A dotted quad under tcp6 can never be dialled: an AF_INET6 socket
+        // with IPV6_V6ONLY set has no v4 path.  Refused here rather than
+        // left to fail every redial
+        IN_ADDR oV4;
+        if ( eFamily == p2pfFamIPv6 &&
+             ::InetPtonW ( AF_INET, (LPCWSTR)csHost, &oV4 ) == 1 )
+          return p2pf::P2PF_E_ENDPOINT;
+      }
 
-      rOut.eKind  = p2pfTcp;
-      rOut.csHost = csHost;
+      rOut.eKind   = p2pfTcp;
+      rOut.eFamily = eFamily;
+      rOut.csHost  = csHost;
       rOut.csName.Empty();
-      rOut.uNum   = uPort;
+      rOut.uNum    = uPort;
       return S_OK;
     }
 
@@ -212,6 +322,7 @@ ParseFacadeEndpoint ( const wchar_t *lpszEndpoint
       rOut.csName = csTarget;
       rOut.csHost.Empty();
       rOut.uNum   = 0;
+      rOut.eFamily = p2pfFamIPv4;
       return S_OK;
     }
 
@@ -230,6 +341,7 @@ ParseFacadeEndpoint ( const wchar_t *lpszEndpoint
 
       rOut.eKind  = p2pfSerial;
       rOut.uNum   = uCom;
+      rOut.eFamily = p2pfFamIPv4;
       rOut.csHost.Empty();
       rOut.csName.Empty();
       return S_OK;

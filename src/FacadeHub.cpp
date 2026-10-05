@@ -1161,9 +1161,18 @@ FacadeHub::MakeCon ( const FacadeEndpoint& rEp, const wchar_t *peer
     switch ( rEp.eKind )
     {
       case p2pfTcp:
-        return bListen
-             ? (P2PeerCon*)P2PeerConWsa::ServiceFactory ( peer, (short)rEp.uNum )
-             : (P2PeerCon*)RetryDialWsa::Make ( peer, rEp.csHost, (short)rEp.uNum );
+      {
+        P2PeerConWsa *pCon = bListen
+             ? P2PeerConWsa::ServiceFactory ( peer, (short)rEp.uNum )
+             : RetryDialWsa::Make ( peer, rEp.csHost, (short)rEp.uNum );
+        // Before the post, because the family takes effect at the next
+        // Listen()/Connect() and the pump makes that call, not us.  IPv4 is
+        // the kernel's own default, so an IPv4 endpoint sets nothing
+        if ( pCon && rEp.eFamily != p2pfFamIPv4 )
+          pCon->SetFamily ( rEp.eFamily == p2pfFamIPv6 ? P2PeerConFamily_IPv6
+                                                       : P2PeerConFamily_Dual );
+        return pCon;
+      }
 
       case p2pfPipe:
         return bListen

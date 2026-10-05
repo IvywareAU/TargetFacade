@@ -917,8 +917,15 @@ struct IP2PHub
     //   scheme    listen form         connect form           retries?
     //   tcp       tcp://:7788         tcp://127.0.0.1:7788   yes
     //             (listen host must be empty, "*" or "0.0.0.0": the kernel
-    //              binds INADDR_ANY unconditionally.  IPv4 only -- IPv6 is
-    //              rejected, P2PeerConWsa is AF_INET.)
+    //              binds every interface.  That is IPv4, the default.)
+    //   tcp6      tcp6://:7788        tcp6://[::1]:7788      yes
+    //             (IPv6 only.  tcp://[::1]:7788 is the same dial -- a
+    //              bracketed literal IS the family -- and a tcp6 dial by NAME
+    //              asks the resolver for AAAA only.)
+    //   tcp46     tcp46://:7788       tcp46://host:7788      yes
+    //             (ONE dual-stack socket: the listen serves v4 and v6 peers,
+    //              the dial takes whichever record the resolver prefers.
+    //              tcp://[::]:7788 is the same listen.)
     //   pipe      pipe://name         pipe://name            yes
     //             (a bare name or a full \\.\pipe\name, taken verbatim)
     //   dmx       dmx://service       dmx://service          NO

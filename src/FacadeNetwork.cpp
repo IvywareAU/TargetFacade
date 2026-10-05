@@ -354,12 +354,15 @@ FacadeNetwork::ResolveDial ( const wchar_t *peerAddr, const wchar_t *dialerAddr
 
     // The record is a LISTEN form; turn it into the dial that reaches it.
     // Only the tcp form differs, and only in the one field a listener does
-    // not have: the host. In-process, that is loopback by construction.
+    // not have: the host. In-process, that is loopback by construction --
+    // the loopback of the family the listener opened in.  A dual-stack
+    // listener answers on either, and 127.0.0.1 is the one a host with IPv6
+    // disabled can still reach.
     HRESULT hr = ParseFacadeEndpoint ( csEndpoint, true, rEp );
     if ( FAILED(hr) )
       return hr;
     if ( rEp.eKind == p2pfTcp && rEp.csHost.IsEmpty() )
-      rEp.csHost = L"127.0.0.1";
+      rEp.csHost = rEp.eFamily == p2pfFamIPv6 ? L"::1" : L"127.0.0.1";
     return S_OK;
 }
 

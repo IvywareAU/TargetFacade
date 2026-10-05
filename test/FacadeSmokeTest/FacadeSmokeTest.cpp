@@ -61,6 +61,9 @@
 //
 // Exit code 0 = PASS, 1 = FAIL (each check prints its own line).
 
+#include <winsock2.h>                // section 20's HostHasIPv6 probe; ahead
+#include <ws2tcpip.h>                //   of windows.h so winsock.h stays out
+#pragma comment ( lib, "ws2_32.lib" )
 #include "TargetFacadeFn.hpp"        // pulls in TargetFacade.h
 #include "TargetFacadeTopology.hpp"  // optional header-only C5 helper
 
@@ -151,6 +154,22 @@ struct Flag
         return m_bSet;
     }
 };
+
+// Will this host bind ::1 at all?  A v6-disabled Windows image is a supported
+// deployment, so section 20 skips there rather than failing the library for
+// what the host will not do.  WSAStartup is the Network's, already done.
+static bool HostHasIPv6 ( )
+{
+    SOCKET s = ::socket ( AF_INET6, SOCK_STREAM, IPPROTO_TCP );
+    if ( s == INVALID_SOCKET )
+      return false;
+    sockaddr_in6 oAddr = {};
+    oAddr.sin6_family = AF_INET6;
+    oAddr.sin6_addr   = in6addr_loopback;
+    const bool bOk = ::bind ( s, (const sockaddr*)&oAddr, sizeof(oAddr) ) == 0;
+    ::closesocket ( s );
+    return bOk;
+}
 
 int main ( )
 {
@@ -391,8 +410,13 @@ int main ( )
       { L"tcp://:0",               "tcp port 0"                        },
       { L"tcp://:65536",           "tcp port out of range"             },
       { L"tcp://:port",            "tcp port not numeric"              },
-      { L"tcp://[::1]:7788",       "IPv6 rejected, not mangled"        },
+      { L"tcp://[::1]:7788",       "listen may not bind one v6 host"   },
       { L"tcp://10.0.0.7:7788",    "listen may not bind one host"      },
+      { L"tcp://::1:7788",         "unbracketed v6 rejected, not mangled" },
+      { L"tcp://[::1]",            "bracketed v6 with no port"         },
+      { L"tcp://[host]:7788",      "a name inside brackets"            },
+      { L"tcp4://[::]:7788",       "a v6 literal under tcp4"           },
+      { L"tcp6://0.0.0.0:7788",    "v4 any-address under tcp6"         },
       { L"pipe://",                "empty pipe name"                   },
       { L"dmx://",                 "empty dmx service"                 },
       { L"serial://COM0",          "COM0 out of range"                 },
@@ -1190,6 +1214,79 @@ int main ( )
     client.close();
     server.close();
     Check ( true, "all hubs closed without hanging" );
+
+    // -----------------------------------------------------------------
+    // 20. IPv6 -- the family comes from the endpoint and nowhere else
+    // -----------------------------------------------------------------
+    // After the teardown for section 19's reason: the 16-hub budget.  The
+    // kernel half -- IPV6_V6ONLY in both directions, the v4-mapped peer -- is
+    // MscsUnitTests' p2p_ipv6 family of gates; what is measured here is that
+    // the GRAMMAR reaches it, so every client that only has a string (COM,
+    // Panama, a config file) can ask for IPv6 at all.
+    std::printf ( "\n-- IPv6 --\n" );
+    if ( !HostHasIPv6 ( ) )
+      std::printf ( "  [SKIP] this host will not bind ::1 -- no IPv6 stack to test\n" );
+    else
+    {
+      Flag oSixUp, oSixMsg, oDuoA, oDuoB, oDuoMsgA, oDuoMsgB;
+      std::string strSix;
+
+      p2pf::Hub six  = net.createHub ( L"Six" );
+      p2pf::Hub sixN = net.createHub ( L"Six.Node" );
+      six.onTopic ( L"ping", [&](const p2pf::Message& m)
+                    {
+                      const wchar_t *w = m.text();
+                      while ( w && *w ) strSix += (char)*w++;
+                      oSixMsg.Set();
+                    } );
+      sixN.onPeerUp ( [&](const wchar_t*){ oSixUp.Set(); } );
+
+      Check ( six.listen   ( L"Six.Node", L"tcp6://:7840" )   == S_OK,
+              "Listen armed tcp6://:7840 (IPv6 only)" );
+      Check ( sixN.connect ( L"Six", L"tcp://[::1]:7840" )     == S_OK,
+              "Connect armed tcp://[::1]:7840 (the literal is the family)" );
+      Check ( oSixUp.Wait ( 10000 ), "an IPv6 peer came up over ::1" );
+      Check ( sixN.sendText ( L"Six", L"ping", L"over v6" ) == S_OK &&
+              oSixMsg.Wait ( 5000 ) && strSix == "over v6",
+              "payload round-tripped over IPv6" );
+
+      // Canonical, so the record says the family even when the caller let a
+      // bracketed literal imply it.
+      Check ( six.endpointFor  ( L"Six.Node" ) == L"tcp6://:7840",
+              "a v6 listen reads back as tcp6://:7840" );
+      Check ( sixN.endpointFor ( L"Six" )      == L"tcp6://[::1]:7840",
+              "a v6 dial reads back bracketed under tcp6" );
+
+      // ONE dual-stack listener per peer, each reached in the other family.
+      p2pf::Hub duo  = net.createHub ( L"Duo" );
+      p2pf::Hub duoA = net.createHub ( L"Duo.A" );
+      p2pf::Hub duoB = net.createHub ( L"Duo.B" );
+      duo.onTopic ( L"ping", [&](const p2pf::Message& m)
+                    {
+                      if ( m.source && std::wstring ( m.source ) == L"Duo.A" ) oDuoMsgA.Set();
+                      if ( m.source && std::wstring ( m.source ) == L"Duo.B" ) oDuoMsgB.Set();
+                    } );
+      duoA.onPeerUp ( [&](const wchar_t*){ oDuoA.Set(); } );
+      duoB.onPeerUp ( [&](const wchar_t*){ oDuoB.Set(); } );
+
+      Check ( duo.listen ( L"Duo.A", L"tcp://[::]:7841" )  == S_OK &&
+              duo.listen ( L"Duo.B", L"tcp46://:7842" )    == S_OK,
+              "two dual-stack listeners armed" );
+      Check ( duo.endpointFor ( L"Duo.A" ) == L"tcp46://:7841",
+              "tcp://[::] reads back as tcp46 -- one socket, both families" );
+      Check ( duoA.connect ( L"Duo", L"tcp://127.0.0.1:7841" ) == S_OK &&
+              duoB.connect ( L"Duo", L"tcp://[::1]:7842" )     == S_OK,
+              "dialled one over IPv4 and one over IPv6" );
+      Check ( oDuoA.Wait ( 10000 ), "a v4 peer reached the dual-stack listener" );
+      Check ( oDuoB.Wait ( 10000 ), "a v6 peer reached the dual-stack listener" );
+      Check ( duoA.sendText ( L"Duo", L"ping", L"v4" ) == S_OK &&
+              duoB.sendText ( L"Duo", L"ping", L"v6" ) == S_OK &&
+              oDuoMsgA.Wait ( 5000 ) && oDuoMsgB.Wait ( 5000 ),
+              "both families delivered through the dual-stack listeners" );
+
+      duoB.close(); duoA.close(); duo.close();
+      sixN.close(); six.close();
+    }
 
     // -----------------------------------------------------------------
     // 19. A whole process from one block of text

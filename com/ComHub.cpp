@@ -147,8 +147,10 @@ static LPCWSTR MeaningOf ( HRESULT hr )
         return L"the endpoint could not be parsed, or names a transport this build "
                L"does not support. Accepted: \"tcp://:PORT\" to listen and "
                L"\"tcp://HOST:PORT\" to dial (a listen may not name a host -- the "
-               L"kernel always binds every interface -- and a dial must; port 1-65535, "
-               L"IPv4 only, IPv6 is not supported), \"pipe://NAME\", \"dmx://SERVICE\", "
+               L"kernel always binds every interface -- and a dial must; port 1-65535; "
+               L"IPv6 as \"tcp://[::1]:PORT\" or \"tcp6://HOST:PORT\", \"tcp://[::]:PORT\" "
+               L"listens on both families, \"tcp46://\" dials either), "
+               L"\"pipe://NAME\", \"dmx://SERVICE\", "
                L"\"serial://COM5\" (1-255). An empty endpoint asks the facade to "
                L"resolve an in-process link.";
 

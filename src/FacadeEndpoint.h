@@ -36,10 +36,22 @@
 // Which kernel connection class an endpoint names.
 enum FacadeTransport
 {
-    p2pfTcp,        // P2PeerConWsa    -- AF_INET only
+    p2pfTcp,        // P2PeerConWsa    -- IPv4, IPv6 or both; see FacadeFamily
     p2pfPipe,       // P2PeerConPipe
     p2pfDmx,        // P2PeerConDmx    -- same process
     p2pfSerial      // P2PeerCon232
+};
+
+// Which address family a tcp endpoint opens in.  Mirrors P2PeerConFamily_e,
+// and is kept separate from it so this header does not pull in the kernel's.
+// IPv4 is the default and is what every endpoint written before IPv6 existed
+// still parses to: the family is only ever something else because the endpoint
+// SAYS so -- a tcp6:// or tcp46:// scheme, or a bracketed IPv6 literal.
+enum FacadeFamily
+{
+    p2pfFamIPv4,    // AF_INET                     tcp://, tcp4://, ipv4://
+    p2pfFamIPv6,    // AF_INET6, IPV6_V6ONLY on    tcp6://, ipv6://, tcp://[v6]
+    p2pfFamDual     // AF_INET6, IPV6_V6ONLY off   tcp46://, tcp://[::] listen
 };
 
 // A parsed endpoint.  Flat and copyable: it is built on a caller thread and
@@ -51,6 +63,7 @@ struct FacadeEndpoint
     CString         csHost;     // tcp dial only; empty on a listen
     CString         csName;     // pipe name / dmx service, verbatim
     unsigned int    uNum;       // tcp port, or COM number
+    FacadeFamily    eFamily;    // tcp only; p2pfFamIPv4 for everything else
 
     // TRUE when the facade RESOLVED this endpoint from an omitted one, FALSE
     // when a caller spelled it out.  Not part of the endpoint's identity --
@@ -62,7 +75,8 @@ struct FacadeEndpoint
     // FacadeHub::MakeCon is the only reader.
     bool            bDerived;
 
-    FacadeEndpoint ( ) : eKind ( p2pfTcp ), uNum ( 0 ), bDerived ( false ) { }
+    FacadeEndpoint ( ) : eKind ( p2pfTcp ), uNum ( 0 ), eFamily ( p2pfFamIPv4 )
+                       , bDerived ( false ) { }
 
     // The canonical spelling of this endpoint -- what ParseFacadeEndpoint
     // would accept back, so an endpoint recorded at arm time round-trips.
@@ -71,7 +85,8 @@ struct FacadeEndpoint
 };
 
 // Parse one endpoint string.  `bListen` only affects the tcp host rule (a
-// listen must not name a host, a dial must).  P2PF_E_ENDPOINT on anything
+// listen must not name a host, a dial must -- the any-address forms "*",
+// "0.0.0.0" and "[::]" are not a host).  P2PF_E_ENDPOINT on anything
 // malformed, out of range, or unsupported by this kernel.
 HRESULT
   ParseFacadeEndpoint ( const wchar_t *lpszEndpoint

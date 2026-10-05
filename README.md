@@ -133,9 +133,13 @@ endpoint becomes a configuration *value* — an ini entry, a registry value, an
 argv element — that changes transport with no rebuild anywhere, and a fifth
 transport becomes a parser entry rather than two more vtable slots, two more
 IDL dispids and two more wrappers per language binding. A listen host must be
-empty, `*` or `0.0.0.0` (the kernel binds `INADDR_ANY` unconditionally);
-`tcp://[::1]:7788` is **rejected**, not mangled, because `P2PeerConWsa` is
-`AF_INET` throughout; ports and COM numbers are range-checked in one place
+empty, `*` or `0.0.0.0` (the kernel binds every interface), or `[::]` for
+IPv6's any-address. IPv4 stays the default, and an endpoint only changes family
+by saying so: a bracketed literal (`tcp://[::1]:7788`) dials IPv6, `tcp6://`
+is IPv6-only (a dial by name asks for AAAA records only), and `tcp46://` -- or
+a listen on `tcp://[::]:PORT` -- is one dual-stack socket that serves both
+families. An unbracketed IPv6 literal is **rejected**, not mangled, since its
+last group would read as the port; ports and COM numbers are range-checked in one place
 instead of being silently narrowed to a `short`. Everything malformed is
 `P2PF_E_ENDPOINT` at the call site, before anything is manufactured — so a bad
 endpoint never burns the one connection slot the kernel allows per peer
@@ -1638,7 +1642,8 @@ make it possible — that constraint is why the header looks the way it does.
   parsed, or names a transport this build does not support. Accepted:
   "tcp://:PORT" to listen and "tcp://HOST:PORT" to dial (a listen may not name
   a host -- the kernel always binds every interface -- and a dial must; port
-  1-65535, IPv4 only, IPv6 is not supported), "pipe://NAME", "dmx://SERVICE",
+  1-65535; IPv6 as "tcp://[::1]:PORT" or "tcp6://HOST:PORT", "tcp://[::]:PORT"
+  listens on both families, "tcp46://" dials either), "pipe://NAME", "dmx://SERVICE",
   "serial://COM5" (1-255). An empty endpoint asks the facade to resolve an
   in-process link.
   ```
