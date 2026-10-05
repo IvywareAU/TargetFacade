@@ -154,57 +154,6 @@ removed there is nothing left to avoid, and the primary verbs of the API
 should not carry a suffix for the rest of their life. That made ABI **4** a
 hard cut; ABI **5** went back to appending — see "Design decisions" below.
 
-### Switching to IPv6
-
-IPv6 is chosen **in the endpoint string**, so it is a configuration change, not a code change —
-the same string works from C++, TargetCom (VBScript, PowerShell, .NET) and the Panama bindings,
-and in a deployment map. The ABI did not change for it. TCP stays **IPv4 by default**: every
-endpoint written before this keeps its meaning, and an endpoint only changes family by saying so.
-
-| You want | Listen | Connect |
-|---|---|---|
-| IPv4 (default, unchanged) | `tcp://:7788` | `tcp://127.0.0.1:7788` · `tcp://host:7788` |
-| IPv6 only | `tcp6://:7788` | `tcp://[::1]:7788` · `tcp6://[2001:db8::5]:7788` · `tcp6://host:7788` |
-| Both on one socket | `tcp://[::]:7788` · `tcp46://:7788` | `tcp46://host:7788` |
-
-- **Listening on both is usually what you want for a server.** `tcp://[::]:7788` opens one
-  socket that takes IPv6 *and* IPv4 clients, so existing IPv4 dialers keep working unchanged.
-- **A bracketed IPv6 literal on a dial is the family.** `tcp://[::1]:7788` dials IPv6 with no
-  other change. The brackets are required: `tcp://::1:7788` is refused (`P2PF_E_ENDPOINT`)
-  because its last group would read as the port. A link-local zone may follow on a dial:
-  `tcp://[fe80::1%eth0]:7788`.
-- **Dialling a NAME over IPv6 needs the scheme**, because a name says nothing about family:
-  `tcp6://host` asks the resolver for AAAA records only, `tcp46://host` takes AAAA or A (the
-  host's own preference), and plain `tcp://host` stays A-only as it always was.
-- **A listen still cannot pick an interface.** The only IPv6 listen host is `[::]`;
-  `tcp://[::1]:7788` as a *listen* is refused, as `tcp://10.0.0.7:7788` always was.
-- **What reads back is canonical.** `EndpointFor` and the deployment map report the family in the
-  scheme — `tcp://[::]:7788` comes back as `tcp46://:7788`, `tcp://[::1]:7788` as
-  `tcp6://[::1]:7788` — so a recorded endpoint round-trips into `Listen`/`Connect`.
-- **Refused, at the call site:** a name inside brackets, an IPv6 literal under `tcp4://`, and
-  `0.0.0.0` under `tcp6://`/`tcp46://`.
-
-```cpp
-server.listen  ( L"Demo.Client", L"tcp://[::]:7788"   );   // IPv6 + IPv4, one socket
-client.connect ( L"Demo.Server", L"tcp://[::1]:7788"  );   // over IPv6
-```
-
-```text
-# peers.ini -- a deployment map moves a whole topology to IPv6 with no rebuild
-Demo.Server = tcp46://server.example:7788
-```
-
-```powershell
-$hub.Listen("Demo.Client", "tcp://[::]:7788")              # TargetCom: the same string
-```
-
-The endpoint-less forms follow along: an in-process dial resolved from a sibling's IPv6-only
-listener uses `::1`, and one resolved from a dual-stack or IPv4 listener uses `127.0.0.1`.
-`FacadeSmokeTest` section 20 runs an IPv6-only link and a dual-stack listener reached over both
-families; it skips on a host that will not bind `::1`. The transport rules underneath — the
-`/64` per-source key, allow-lists matching only their own family — are in Targetcore's README,
-*Switching to IPv6*.
-
 ### The address as the whole handle
 
 Omit the endpoint (`nullptr` or `L""`) and the facade resolves it — but only
@@ -430,6 +379,57 @@ hub must already be enforcing. Either way the refusal is `P2PF_E_SECURITY`,
 with the file or the reason on the diagnostic stream, and nothing is armed —
 see "Secure hubs" below. A plain hub, which is what every ABI up to 10 could
 create, is unaffected by all of it.
+
+## Switching to IPv6
+
+IPv6 is chosen **in the endpoint string**, so it is a configuration change, not a code change —
+the same string works from C++, TargetCom (VBScript, PowerShell, .NET) and the Panama bindings,
+and in a deployment map. The ABI did not change for it. TCP stays **IPv4 by default**: every
+endpoint written before this keeps its meaning, and an endpoint only changes family by saying so.
+
+| You want | Listen | Connect |
+|---|---|---|
+| IPv4 (default, unchanged) | `tcp://:7788` | `tcp://127.0.0.1:7788` · `tcp://host:7788` |
+| IPv6 only | `tcp6://:7788` | `tcp://[::1]:7788` · `tcp6://[2001:db8::5]:7788` · `tcp6://host:7788` |
+| Both on one socket | `tcp://[::]:7788` · `tcp46://:7788` | `tcp46://host:7788` |
+
+- **Listening on both is usually what you want for a server.** `tcp://[::]:7788` opens one
+  socket that takes IPv6 *and* IPv4 clients, so existing IPv4 dialers keep working unchanged.
+- **A bracketed IPv6 literal on a dial is the family.** `tcp://[::1]:7788` dials IPv6 with no
+  other change. The brackets are required: `tcp://::1:7788` is refused (`P2PF_E_ENDPOINT`)
+  because its last group would read as the port. A link-local zone may follow on a dial:
+  `tcp://[fe80::1%eth0]:7788`.
+- **Dialling a NAME over IPv6 needs the scheme**, because a name says nothing about family:
+  `tcp6://host` asks the resolver for AAAA records only, `tcp46://host` takes AAAA or A (the
+  host's own preference), and plain `tcp://host` stays A-only as it always was.
+- **A listen still cannot pick an interface.** The only IPv6 listen host is `[::]`;
+  `tcp://[::1]:7788` as a *listen* is refused, as `tcp://10.0.0.7:7788` always was.
+- **What reads back is canonical.** `EndpointFor` and the deployment map report the family in the
+  scheme — `tcp://[::]:7788` comes back as `tcp46://:7788`, `tcp://[::1]:7788` as
+  `tcp6://[::1]:7788` — so a recorded endpoint round-trips into `Listen`/`Connect`.
+- **Refused, at the call site:** a name inside brackets, an IPv6 literal under `tcp4://`, and
+  `0.0.0.0` under `tcp6://`/`tcp46://`.
+
+```cpp
+server.listen  ( L"Demo.Client", L"tcp://[::]:7788"   );   // IPv6 + IPv4, one socket
+client.connect ( L"Demo.Server", L"tcp://[::1]:7788"  );   // over IPv6
+```
+
+```text
+# peers.ini -- a deployment map moves a whole topology to IPv6 with no rebuild
+Demo.Server = tcp46://server.example:7788
+```
+
+```powershell
+$hub.Listen("Demo.Client", "tcp://[::]:7788")              # TargetCom: the same string
+```
+
+The endpoint-less forms follow along: an in-process dial resolved from a sibling's IPv6-only
+listener uses `::1`, and one resolved from a dual-stack or IPv4 listener uses `127.0.0.1`.
+`FacadeSmokeTest` section 20 runs an IPv6-only link and a dual-stack listener reached over both
+families; it skips on a host that will not bind `::1`. The transport rules underneath — the
+`/64` per-source key, allow-lists matching only their own family — are in Targetcore's README,
+*Switching to IPv6*.
 
 ## What `toPeer` means on `Listen`
 
