@@ -749,9 +749,14 @@ FacadeHub::PumpOnce ( unsigned int uMillisecs, unsigned int *puWhat )
                        ? P2PsigPump_CLOSE : P2PsigPump_CLOSEONIDLE;
       try
       {
-        P2PeerCon *pCon = 0;
-        while ( EnumP2PmsgCon ( GetHubID(), &pCon ) )
-          pCon -> Signal ( nConSig );
+        // Retained, as ConSignal now is: Signal() AddRefs, and an AddRef on
+        // a raw list pointer whose last Release() is deleting it revives a
+        // dying object (Targetcore 3.3.1)
+        {
+          P2PretainedCons oCons ( GetHubID() );
+          for ( P2PeerCon *pCon : oCons.v )
+            pCon -> Signal ( nConSig );
+        }
 
         P2PumpID nPumpID = 0;
         while ( EnumP2PmsgPump ( GetHubID(), nPumpID ) )
@@ -3971,10 +3976,15 @@ FacadeHub::On_PITimer ( bool bCancel, PITimerID nTimerID, DWORD dwUserKey )
 //       : Choosing needs the whole list, which is why EnumP2PmsgCon is now
 //         exported from Targetcore (P2Pwin32.h).  ConQuery cannot express it:
 //         it has no notion of a better match
-//       : The hub's own m_oCSectionHub is held across the walk, exactly as
-//         ConQuery does it, and the SafeP2PeerCon assignment (which AddRefs)
-//         happens INSIDE that lock -- so the connection cannot be retired
-//         between being chosen and being referenced
+//       : The walk is P2PretainedCons (Targetcore 3.3.1), so every candidate
+//         holds a reference from the moment it is listed until the
+//         SafeP2PeerCon has taken its own.  This used to say the hub's
+//         m_oCSectionHub made that safe; it never did -- the pump's last
+//         Release() and DropP2PmsgCon() never take that lock, so a chosen
+//         connection could be deleted before the AddRef, and the AddRef then
+//         revived a dying object (P2PeerWeb W4's m_cRef==0 abort on Linux,
+//         the same shape).  The hub lock is kept for what it does order: this
+//         walk against ConQuery and ConSignal
 //
 BOOL
 FacadeHub::FindCon ( const wchar_t *peer, ConPick ePick
@@ -3994,8 +4004,10 @@ FacadeHub::FindCon ( const wchar_t *peer, ConPick ePick
     HubLock oLock ( pThis->m_oCSectionHub );
     try
     {
-      P2PeerCon *pCon = 0;
-      while ( ::EnumP2PmsgCon ( pThis->m_nHubID, &pCon ) && pCon )
+      // Retained until rSafe has its own reference: the assignment below is
+      // inside this scope on purpose
+      P2PretainedCons oCons ( pThis->m_nHubID );
+      for ( P2PeerCon *pCon : oCons.v )
       {
         if ( !( pCon->GetP2Paddress() == peer ) )
           continue;
@@ -4009,17 +4021,18 @@ FacadeHub::FindCon ( const wchar_t *peer, ConPick ePick
         if ( bWanted && !pBest )
           pBest = pCon;
       }
+
+      // Fall back to the first match: before login there IS no session
+      // connection, and the armed one is then the only truthful answer.
+      if ( pBest || pFirst )
+        rSafe = pBest ? pBest : pFirst;
     }
     catch ( ... )
     {
       // The hub context is gone (closed, or closing on its own thread).
-      // Whatever was found before the throw is still valid; nothing was.
+      // A throw comes from the retain, before anything was listed.
     }
 
-    // Fall back to the first match: before login there IS no session
-    // connection, and the armed one is then the only truthful answer.
-    if ( pBest || pFirst )
-      rSafe = pBest ? pBest : pFirst;
     return rSafe ? TRUE : FALSE;
 }
 
