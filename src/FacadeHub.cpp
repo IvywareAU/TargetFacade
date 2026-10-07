@@ -4009,7 +4009,7 @@ FacadeHub::FindCon ( const wchar_t *peer, ConPick ePick
       P2PretainedCons oCons ( pThis->m_nHubID );
       for ( P2PeerCon *pCon : oCons.v )
       {
-        if ( !( pCon->GetP2Paddress() == peer ) )
+        if ( !( pCon->CopyP2Paddress() == peer ) )   // off-pump: a copy (3.3.2)
           continue;
 
         if ( !pFirst )
