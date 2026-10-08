@@ -1742,6 +1742,13 @@ int main ( )
           strPeer = peer ? peer : L"";
           oEvent.Set();
       } );
+      // Registered BEFORE arming, as every handler must be: the facade does not
+      // replay a peer-up to a handler attached late. This used to be set after
+      // connect(), and once Release Targetcore 3.3.x brought the dmx link up
+      // before the next line ran, the event was gone -- isPeerUp() said 1 while
+      // the wait timed out on "never came up".
+      Flag oUp;
+      fCli.onPeerUp ( [&](const wchar_t*){ oUp.Set(); } );
 
       Check ( fSrv.listen ( L"Flt6.Client", L"dmx://P2PmsgExt6" )
                 == p2pf::P2PF_S_UNRELATED_LINK,
@@ -1753,8 +1760,6 @@ int main ( )
               strPeer == L"Flt6.Server",
               "...as a CODE and a peer, which is what a client can branch on" );
 
-      Flag oUp;
-      fCli.onPeerUp ( [&](const wchar_t*){ oUp.Set(); } );
       if ( oUp.Wait ( 10000 ) )
       {
         Check ( fCli.sendText ( L"Flt6.Server", L"declined", L"x" ) == S_OK &&
