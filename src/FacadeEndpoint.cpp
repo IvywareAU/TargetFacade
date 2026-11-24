@@ -173,6 +173,7 @@ FacadeEndpoint::Format ( ) const
         break;
       }
       case p2pfPipe:   csOut.Format ( L"pipe://%s",   (LPCWSTR)csName );       break;
+      case p2pfShm:    csOut.Format ( L"shm://%s",    (LPCWSTR)csName );       break;
       case p2pfDmx:    csOut.Format ( L"dmx://%s",    (LPCWSTR)csName );       break;
       case p2pfSerial: csOut.Format ( L"serial://COM%u", uNum );               break;
     }
@@ -312,13 +313,17 @@ ParseFacadeEndpoint ( const wchar_t *lpszEndpoint
       return S_OK;
     }
 
-    // --- pipe / dmx ------------------------------------------------------
-    if ( IsScheme ( csScheme, L"pipe" ) || IsScheme ( csScheme, L"dmx" ) )
+    // --- pipe / shm / dmx ------------------------------------------------
+    //  shm:// takes a PIPE name, verbatim, exactly as pipe:// does: the pipe is its
+    //  rendezvous and control channel, the shared memory only carries the bytes
+    if ( IsScheme ( csScheme, L"pipe" ) || IsScheme ( csScheme, L"shm" ) ||
+         IsScheme ( csScheme, L"dmx" ) )
     {
       if ( csTarget.IsEmpty() )
         return p2pf::P2PF_E_ENDPOINT;
 
-      rOut.eKind  = IsScheme ( csScheme, L"pipe" ) ? p2pfPipe : p2pfDmx;
+      rOut.eKind  = IsScheme ( csScheme, L"pipe" ) ? p2pfPipe
+                  : IsScheme ( csScheme, L"shm"  ) ? p2pfShm : p2pfDmx;
       rOut.csName = csTarget;
       rOut.csHost.Empty();
       rOut.uNum   = 0;

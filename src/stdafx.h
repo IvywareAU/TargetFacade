@@ -55,6 +55,8 @@
 #include "P2PeerHub.h"
 #include "P2PeerConWsa.h"
 #include "P2PeerConPipe.h"
+#include "P2PeerConShm.h"  // shm:// - pipe control, shared-memory data (Targetcore 3.10.0)
+#include "P2PeerioShm.h"
 #include "P2PeerConDmx.h"
 #include "P2PeerCon232.h"
 #include "P2Peerio.h"

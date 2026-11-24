@@ -418,6 +418,7 @@ int main ( )
       { L"tcp4://[::]:7788",       "a v6 literal under tcp4"           },
       { L"tcp6://0.0.0.0:7788",    "v4 any-address under tcp6"         },
       { L"pipe://",                "empty pipe name"                   },
+      { L"shm://",                 "empty shm (pipe) name"             },
       { L"dmx://",                 "empty dmx service"                 },
       { L"serial://COM0",          "COM0 out of range"                 },
       { L"serial://COM999",        "COM999 out of range"               },

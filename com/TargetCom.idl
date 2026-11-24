@@ -88,7 +88,7 @@ interface IP2PHubCom : IDispatch
 {
     // --- connections ------------------------------------------------------
     // One pair for every transport; `endpoint` is "tcp://:7788",
-    // "tcp://127.0.0.1:7788", "pipe://name", "dmx://service", "serial://COM5",
+    // "tcp://127.0.0.1:7788", "pipe://name", "shm://name", "dmx://service", "serial://COM5",
     // or "" to resolve an in-process link with no configuration at all.
     // `toPeer` is the address of the hub on the OTHER end -- and may be a
     // pattern ("*", "Demo.*") on Listen.

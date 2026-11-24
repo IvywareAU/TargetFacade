@@ -928,6 +928,11 @@ struct IP2PHub
     //              tcp://[::]:7788 is the same listen.)
     //   pipe      pipe://name         pipe://name            yes
     //             (a bare name or a full \\.\pipe\name, taken verbatim)
+    //   shm       shm://name          shm://name             yes
+    //             (same host, another process: the name is a PIPE name, the
+    //              pipe is the rendezvous, the bytes go through shared memory.
+    //              Refused to arm where the platform cannot wake the pump --
+    //              Windows without NtAssociateWaitCompletionPacket.)
     //   dmx       dmx://service       dmx://service          NO
     //   serial    serial://COM5       serial://5             NO
     //   (omitted) NULL / ""           NULL / ""              yes, 8 attempts

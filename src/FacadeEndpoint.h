@@ -39,7 +39,9 @@ enum FacadeTransport
     p2pfTcp,        // P2PeerConWsa    -- IPv4, IPv6 or both; see FacadeFamily
     p2pfPipe,       // P2PeerConPipe
     p2pfDmx,        // P2PeerConDmx    -- same process
-    p2pfSerial      // P2PeerCon232
+    p2pfSerial,     // P2PeerCon232
+    p2pfShm         // P2PeerConShm    -- same host, another process: a pipe name for
+                    //                    the rendezvous, shared memory for the bytes
 };
 
 // Which address family a tcp endpoint opens in.  Mirrors P2PeerConFamily_e,

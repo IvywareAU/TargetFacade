@@ -150,7 +150,8 @@ static LPCWSTR MeaningOf ( HRESULT hr )
                L"kernel always binds every interface -- and a dial must; port 1-65535; "
                L"IPv6 as \"tcp://[::1]:PORT\" or \"tcp6://HOST:PORT\", \"tcp://[::]:PORT\" "
                L"listens on both families, \"tcp46://\" dials either), "
-               L"\"pipe://NAME\", \"dmx://SERVICE\", "
+               L"\"pipe://NAME\", \"shm://NAME\" (a pipe name; data in shared memory), "
+               L"\"dmx://SERVICE\", "
                L"\"serial://COM5\" (1-255). An empty endpoint asks the facade to "
                L"resolve an in-process link.";
 

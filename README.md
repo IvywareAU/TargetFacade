@@ -118,9 +118,18 @@ hub.listen  ( L"Demo.Client", L"serial://COM5"         );
 | `tcp` | `tcp://:7788` | `tcp://127.0.0.1:7788` | yes |
 | `tcp6` · `tcp46` | `tcp6://:7788` · `tcp://[::]:7788` | `tcp://[::1]:7788` · `tcp46://host:7788` | yes — see [Switching to IPv6](#switching-to-ipv6) |
 | `pipe` | `pipe://name` | `pipe://name` | yes |
+| `shm` | `shm://name` | `shm://name` | yes |
 | `dmx` | `dmx://service` | `dmx://service` | no |
 | `serial` | `serial://COM5` | `serial://COM5` | no |
 | *(omitted)* | `NULL` / `""` | `NULL` / `""` | yes, 8 attempts |
+
+`shm://` (Targetcore 3.10.0) is `pipe://` with the bytes moved into shared memory:
+the name is a pipe name, taken verbatim, and the pipe stays the rendezvous and the
+control channel - so it inherits the pipe's access control, accept cap and `Local`
+trust class. Use it between processes on one host where the pipe's per-message
+kernel round trip is the cost. It is refused at arm time on a Windows without
+`NtAssociateWaitCompletionPacket` (pre-Windows 8). Tested by
+`test/ShmEndpointTest`.
 
 Retry is a property of the *endpoint*, not of the method name — and the last row
 is the one that took longest to get right (see "the derived Dmx dial" below).
@@ -735,6 +744,7 @@ of that disagreement was wrong.
 |---|---|---|
 | `tcp://` | `RetryDialWsa::Make` | redials every 500 ms, forever |
 | `pipe://` | `RetryDialPipe::Make` | redials every 500 ms, forever |
+| `shm://` | `RetryDialShm::Make` | redials every 500 ms, forever |
 | `dmx://` | `P2PeerConDmx::ClientFactory` | **one shot, then gone** |
 | `serial://` | `P2PeerCon232::ClientFactory` | **one shot, then gone** |
 

@@ -344,6 +344,26 @@ class RetryDialPipe : public P2PeerConPipe
           : P2PeerConPipe ( strThat, lpszPipename ) { }
 };
 
+//  shm:// dial: P2PeerConShm::ClientFactory field for field, plus the redial. A
+//  failed pipe open leaves the shm handshake a no-op (P2PeerConShm::ShmAccept
+//  returns on a null handle), so the pipe's restart path is the whole retry
+class RetryDialShm : public P2PeerConShm
+{
+    public:
+      static RetryDialShm*
+        Make ( P2PaddrSTR strThat, LPCTSTR lpszPipename )
+      {
+          RetryDialShm *pCon = new RetryDialShm ( );
+          pCon->m_oThatP2Paddr   = strThat;
+          pCon->m_eP2PeerConMode = P2PeerCon_CLIENT;
+          pCon->m_sPipename      = lpszPipename;
+          pCon->SetP2Peerio ( new P2PeerioShm() );
+          pCon->m_uAutoRestart   = kRedialMillisecs;
+          return pCon;
+      }
+      virtual bool HasDroppedOut ( HRESULT ) { return true; }
+};
+
 // ---------------------------------------------------------------------------
 // Every Dmx connection the facade manufactures -- and the accept filter the
 // kernel's own Dmx factories forget.
@@ -1183,6 +1203,16 @@ FacadeHub::MakeCon ( const FacadeEndpoint& rEp, const wchar_t *peer
         return bListen
              ? (P2PeerCon*)P2PeerConPipe::ServiceFactory ( peer, rEp.csName )
              : (P2PeerCon*)RetryDialPipe::Make ( peer, rEp.csName );
+
+      case p2pfShm:
+        //  Refused where the wake cannot reach the pump (Windows without
+        //  NtAssociateWaitCompletionPacket): no connection, so the arm fails
+        //  loudly instead of a link that never delivers
+        if ( !P2PeerConShm::IsSupported ( ) )
+          return 0;
+        return bListen
+             ? (P2PeerCon*)P2PeerConShm::ServiceFactory ( peer, rEp.csName )
+             : (P2PeerCon*)RetryDialShm::Make ( peer, rEp.csName );
 
       case p2pfDmx:
         if ( bListen )
